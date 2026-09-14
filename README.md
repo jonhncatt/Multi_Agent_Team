@@ -17,9 +17,35 @@
 
 当前稳定版本：`3.1.6C`
 
+## 先从这里开始
+
+- **首次安装：** [macOS / Linux 快速启动](#快速启动) · [Windows / EXE 指南](README.windows.md)
+- **配置模型：** [最小配置](#env-最小配置) · [.env.example](.env.example)
+- **更新与排障：** [仓库更新](#仓库更新) · [排障指南](docs/observability/troubleshooting.md)
+- **本版变更：** [3.1.6C 发布说明](docs/releases/3.1.6C.zh-CN.md)
+
+## 日常使用
+
+1. 在 Projects 添加本机项目目录，再创建 Thread。Projects 和 Threads 是两个层次；业务项目可以与 VP 安装仓库分开。
+2. 输入区的模型/推理面板可选择模型和推理强度；闪电切换 Priority。是否开放由 VP 的模型能力判断决定，实际支持仍取决于公司的模型部署。
+3. 模型、服务商、推理强度和 Priority **按 Thread 独立保存到当前浏览器**，刷新后恢复；不承诺跨浏览器或跨电脑同步。新 Thread 继承创建时的选择，之后互不影响。
+4. 命令审批、任务更新审批和用户选项询问是不同交互。选项回答会显示在对话中，方便核对；模型收到的是原工具调用的结果，不会收到一条重复指令。
+5. 执行过程可展开工具、文件修改和 Subagent 记录。回答中的普通链接另开页面，不替换 VP；页内锚点仍留在原页。
+
+不同主 Thread 默认最多并行运行 **5** 条，超过后排队；每个主 Turn 默认最多并行 **3** 个 Subagent。这两项限制独立，分别由 `VP_MAX_CONCURRENT_RUNS` 和 `VP_MAX_CONCURRENT_SUBAGENTS` 配置。
+
+## 停止、继续和长任务
+
+- “停止”用于中断当前运行，包括模型请求、受控命令和代码搜索；Windows 只清理 VP 所管理运行的子进程树，不按程序名称批量结束其他应用。
+- 后续“继续”依据已保存历史重新推进，不是恢复被终止进程的内存现场。
+- Subagent 状态属于 Thread：当前后台中尚未完成的任务可继续等待，已完成任务返回保存结果。后台重启后旧活动任务会标记为 `interrupted_by_restart`，不会被当成仍在工作。
+- 压缩按完整的消息/工具事务替换旧模型上下文，保留 checkpoint 和近期内容；未闭合的工具调用不会被切开。原始持久记录与模型下一次实际收到的上下文并不是一回事。
+- 每次主模型请求前，Runtime 重新附上 Subagent 的 ID、任务和最新状态，不依赖压缩摘要记住 spawn 消息。
+- `search_codebase` 优先使用可用的 rg；没安装 rg 时使用 Python 回退。两条路径都可取消，整次搜索时限为 20 秒；超时返回已有结果并标明不完整。默认跳过常见依赖/缓存目录并限制大文件；需要查这些目录时显式缩小搜索根目录。
+
 ## Stable Runtime
 
-3.1.6C 当前分支使用独立的全局 Skill Registry：支持只读 Built-in Skills 和通过 Vintage Programmer Git 仓库共享的 Team Skills。runtime 只注入带路径的轻量 `[available_skills]`；模型命中后用普通 `read_file` 按需读取完整 `SKILL.md`。
+当前稳定运行时使用独立的全局 Skill Registry：支持只读 Built-in Skills 和通过 Vintage Programmer Git 仓库共享的 Team Skills。runtime 只注入带路径的轻量 `[available_skills]`；模型命中后用普通 `read_file` 按需读取完整 `SKILL.md`。
 
 `save_skill` 只把可复用流程写入 `skills/team/<name>/SKILL.md`；保存位置由 VP 安装仓库决定，与当前选择的业务项目无关。内置 `create-team-skill` 指导 Agent 生成 Team Skill，Built-in Skills 保持只读。
 
@@ -64,11 +90,17 @@ Context 状态采用 Codex 风格的轻量常驻显示：聊天主路径先使�
 
 `Session` 现在就是一条持久 Thread。模型输入按 typed transcript 回放真实的 `user`、`assistant`、`tool` 消息，最后追加当前用户消息；不再构造六/八要素 `ModelContext` JSON，也不再调用任务关系分类器。当前目录和权限合并进唯一的 SystemMessage；只有用户显式绑定的 Project Profile 才提供 `AGENTS.md` 项目说明，压缩摘要和附件也按需作为带来源标记的上下文消息提供。Thread 文件只保存 transcript、最小 compaction、活动附件、待处理交互和精简 Trace 引用；`task_state`、`work_cursor`、`thread_memory`、`current_task_focus` 等旧 Harness 语义状态不再持久化。`turns` 只在加载后由 transcript 临时投影，兼容现有 API 和前端。
 
-磁盘目录继续使用 `app/data/sessions/`，所以现有 URL、Session ID 和聊天记录不变。旧 Session 首次打开时会自动备份并迁移为 Thread V4，无需手动脚本。命令审批和 `request_user_input` 不会创建新的用户消息：原 Turn 暂停，用户决定后以同一 `tool_call_id` 的 ToolMessage 恢复。Plan 在暂停期间保留，Turn 结束后只留在历史中。上下文压缩是 Thread 内部的替换历史操作；它不创建聊天消息，也不会压缩尚未闭合的 tool call。新执行的技术事实保存在 `app/data/turn_traces/<thread_id>/<turn_id>.json`，旧 `runs` 仅用于读取兼容。开发者调试以完整 Thread 历史为主体，工具结果按需展开对应 Trace，System Prompt 单独按需查看。
+磁盘目录继续使用 `app/data/sessions/`，所以现有 URL、Session ID 和聊天记录不变。旧 Session 首次打开时会自动备份并迁移为 Thread V4，无需手动脚本。命令审批和 `request_user_input` 都暂停原 Turn，用户决定后以同一 `tool_call_id` 的 ToolMessage 恢复。选项回答还会保存一份仅供 UI 展示的用户消息；这份 `ui_only` 记录不再重复发送给模型。Plan 在暂停期间保留，Turn 结束后只留在历史中。上下文压缩是 Thread 内部的替换历史操作；它不创建聊天消息，也不会压缩尚未闭合的 tool call。新执行的技术事实保存在 `app/data/turn_traces/<thread_id>/<turn_id>.json`，旧 `runs` 仅用于读取兼容。开发者调试以完整 Thread 历史为主体，工具结果按需展开对应 Trace，System Prompt 单独按需查看。
 
-## Manual Update
+## 仓库更新
 
-侧边栏“更新”按钮现在是手动应用仓库更新入口。只有用户点击时才会调用 `/api/app/update`，不会后台检查、轮询或自动 fetch。后端固定执行 `git fetch --tags origin`、`git reset --hard origin/<branch>`、`git pull --ff-only`，目标是 Vintage Programmer 应用仓库，不是当前 project root。更新会丢弃 tracked 文件的未提交修改。桌面 EXE 模式更新成功后会显示“关闭”和“立即重启 VP”两个选项；选择重启时，受桌面令牌保护的本地接口会用无控制台窗口的助手停止旧后台、启动新后台，当前窗口显示 Preparing 风格的等待界面，并在检测到新进程后自动刷新。
+工作台加载后约 30 秒首次检查，之后每小时检查一次；页面隐藏时跳过，重新可见时按间隔补查。检查的是 **VP 安装仓库当前分支的 upstream**，不是当前业务项目，也不固定绑定 GitHub 或 `origin`；因此可用于 GitLab 和自定义远端名。
+
+检查会 fetch 对应分支并更新 remote-tracking ref，但不会 reset 工作区或自动安装更新。有新提交时，“更新”按钮显示提示。点击更新才会应用：定向 `git fetch --no-tags` → `git reset --hard <upstream-ref>` → `git pull --ff-only`。当前分支未配置 upstream 时，代码会尝试默认远端和同名分支；建议先正确配置跟踪关系。
+
+**更新会丢弃已跟踪文件的本地未提交修改，并使当前分支指向远端版本。** 自己改过代码时先提交并推送到分支，不要把更新按钮当作保留本地改动的普通 pull。更新检查不拉 tags，避免旧 tag 冲突阻塞检查。
+
+桌面 EXE 更新成功后提供“关闭”和“立即重启 VP”；重启会替换后台，在当前窗口显示等待界面，新后台就绪后刷新。窗口不是每次都会重新弹出冷启动 Preparing 页。
 
 ## Permission Profiles
 
@@ -200,7 +232,9 @@ Windows 版本的推荐启动方式见 [README.windows.md](README.windows.md)。
 
 ## `.env` 最小配置
 
-复制 `.env.example` 为 `.env`，然后只保留一个 provider profile（模型提供方配置）。
+首次安装时复制 `.env.example` 为 `.env`，至少配置一个 provider；`VP_LLM_PROVIDER` 指定默认提供方。也可以配置多个提供方，再在 Thread 中选择，不必删除其他有效配置。
+
+配置从 VP 安装仓库根目录加载，不读取当前业务项目的 `.env`。`VP_DOTENV_PATH` 可指定其他配置文件，修改后重启生效。`.env` 中的 `VP_*`、`SSL_CERT_FILE`、`REQUESTS_CA_BUNDLE` 会覆盖同名进程环境变量；其他变量只补充环境中不存在的值。模型认证使用对应 `VP_*_API_KEY`，不要以为通用 `OPENAI_API_KEY` 会自动替代它。
 
 ### OpenAI 官方
 
@@ -380,7 +414,7 @@ python scripts/validate_skills.py
 
 正式发布流程当前是：
 
-1. 在 `cleanup/*` 或其他发布候选分支完成改动。
+1. 从最新 `main` 创建 `codex/*` 发布候选分支。
 2. 保持本地 runtime state（运行时本地状态）不进入 Git。
 3. 在本地跑 release gates（发版检查）。
 4. 向 `main` 发起 PR。

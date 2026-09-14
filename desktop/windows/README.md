@@ -53,10 +53,22 @@ and **Restart VP now**. Restarting keeps the current window open, replaces the
 local backend without opening a console window, shows a Preparing-style waiting
 screen, and reloads the page automatically when the new process is ready.
 
+Version 3.1.6C changes backend Python and frontend source files; these changes do
+not require rebuilding the launcher EXE. Rebuild when a release changes packaged
+launcher code or executable resources, and replace the EXE only after exiting VP.
+
+If dragging the EXE directly to the taskbar restarts Explorer on a particular
+Windows installation, use the context-menu Pin command or pin a shortcut instead.
+Verify that its target is the VP executable, not only a Chrome App URL.
+
+Answer links open a separate page and leave the VP window in place. Per-Thread
+model settings live in this desktop Chrome profile; another browser/profile has
+its own saved choices.
+
 ## Build on Windows
 
 ```powershell
-desktop\windows\build.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\desktop\windows\build.ps1
 ```
 
 The executable is written to `dist\VintageProgrammer.exe`.

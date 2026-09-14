@@ -2,6 +2,13 @@
 
 这里仅保留能够帮助使用、维护或验证当前 Vintage Programmer 的文档。当前实现以代码和测试为最终事实来源；发布说明和审计记录只描述对应时间点，不应覆盖当前架构文档。
 
+## 3.1.6C 当前入口
+
+- [产品首页与日常操作](../README.md)：Project / Thread、模型选择、审批、停止、更新。
+- [Windows / EXE 指南](../README.windows.md)：安装、build、任务栏、日志与重启。
+- [3.1.6C 发布说明](releases/3.1.6C.zh-CN.md)：本版搜索、Future 对账、模型隔离和压缩状态修复。
+- 下面的架构文档解释实现；历史 release / audit 文档只代表当时状态。
+
 ## 公司 GitLab 建议
 
 建议把本页列出的全部当前文档随 Vintage Programmer 仓库共享。它们不包含凭证、公司 URL、业务文件内容或个人绝对路径。

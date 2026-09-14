@@ -1,6 +1,6 @@
 # Agent 工作流：运行中追加指令与 Subagent
 
-本轮保持 `Session = Thread`：Session 仍是持久 Thread，Runtime 每次只运行一个主模型请求链。Harness 只负责消息排队、工具边界、子上下文隔离、事件记录和权限边界，不通过关键词判断任务语义。
+当前使用 `Session = Thread`：Session 是持久 Thread，同一 Thread 同时只运行一个主模型请求链；不同 Thread 可并行。Harness 只负责消息排队、工具边界、子上下文隔离、事件记录和权限边界，不通过关键词判断任务语义。
 
 ## 运行中追加指令
 
@@ -16,13 +16,21 @@
 
 - `spawn_subagent` 是普通模型工具。是否使用、委派什么任务由主模型决定，不存在关键词路由。
 - `spawn_subagent` 只负责启动并立即返回 id；独立任务可以先后启动并在后台并行执行。主 Agent 通过 `wait_subagents` 等待全部或指定结果，不再把一次子任务阻塞成同步工具调用。
-- 默认每个主 Turn 最多同时运行 3 个子 Agent，可用 `VP_MAX_CONCURRENT_SUBAGENTS` 在 1–8 之间调整。Turn 结束前 Runtime 会收束其子线程，不留下孤儿任务。
+- 默认每个主 Turn 最多同时运行 3 个子 Agent，可用 `VP_MAX_CONCURRENT_SUBAGENTS` 在 1–8 之间调整。主 Turn 正常结束不等于取消子 Agent：仍在运行的任务保留 Thread 级记录和执行句柄，后续主运行可以用原 ID 等待。父运行失败或取消时会清理其拥有的活动子任务。
 - 子上下文不继承主 Thread 历史，只接收自包含任务、当前项目、附件和 RuntimeBoundary。
 - 内置角色定义独立存放在 `agents/builtin/*.toml`，当前提供 `explorer`、`tester`、`analyst`、`summarizer`。每个角色有不同说明和工具白名单；本轮不增加 `agents/team/`。
 - 子 Agent 没有 `spawn_subagent`、`wait_subagents`、`apply_patch`、`save_skill` 或用户询问工具；工作区写入能力关闭。只有 `tester` 角色包含命令工具，用于聚焦测试，且仍不能通过命令修改工作区。
 - Read-only Subagent 不进入交互式命令审批流程。`python -c`、`node -e` 或需要执行网络来源代码的命令会返回结构化的“改用安全方案”结果，要求改用文件工具、已有脚本或已有测试模块；全局 provenance 策略不放宽。
 - 子 Agent 的完整上下文不会回灌主 Thread。主 Agent 只在 `wait_subagents` 结果中收到状态、精简摘要、工具数量和 token 统计。
 - 前端将 `subagent` stream item 显示为主任务内的折叠卡片；没有独立聊天页或递归子 Agent。
+
+## 跨运行与压缩后的 Subagent
+
+- `app/thread_subagents.py` 按 Thread 保存任务和结果。ID 不只属于当前一次主运行；已完成结果可重复读取，但 token 使用量不会重复计入。
+- 当前后台中，Future 确认结束后若记录仍为活动状态，会补写成功结果、取消或异常状态。等待超时或用户停止等待不等于子任务已结束。
+- 后台重启后，内存 Future 已消失。旧后台拥有的活动记录会转为 `interrupted_by_restart`；已保存的完成结果保持可读。
+- 每次主模型请求前，从任务记录重建 `[subagent_state]`，带上 ID、任务、状态和结果可用性。它独立于压缩摘要，且不会插在 Assistant 工具调用与 ToolMessage 之间。
+- 主 Agent 应复用已有活动任务并收集结果；这不是按自然语言相似度禁止创建新任务。
 
 ## 兼容性
 

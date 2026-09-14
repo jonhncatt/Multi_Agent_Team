@@ -2,6 +2,14 @@
 
 当前稳定版本：`3.1.6C`。
 
+## 选择启动方式
+
+- **源码方式：** 使用下面的[运行步骤](#运行)，浏览器访问本机服务。
+- **桌面 EXE：** 先完成 Python 虚拟环境、依赖和 `.env` 配置，再把 `VintageProgrammer.exe` 放到 VP 仓库根目录。EXE 是启动器，不是包含 Python 和全部依赖的独立安装包。
+- **已有环境升级：** 阅读[更新与重启](#更新与重启)，不要覆盖自己的 `.env`。从 `.env.example` 复制配置只适用于首次安装。
+
+模型与推理强度面板、每 Thread 独立设置、Subagent 和搜索的当前行为见[首页](README.md#日常使用)。
+
 ## Stable Runtime
 
 当前分支使用全局 Built-in/Team Skill Registry。`save_skill` 只把可复用流程写入 Vintage Programmer 仓库的 `skills\team\<name>\SKILL.md`，不会写入当前业务项目；`skills\builtin` 保持只读。模型从 `[available_skills]` 获得启用 Skill 的路径，用普通 `read_file` 读取完整说明，并用普通 `exec_command` 执行附属脚本。
@@ -10,7 +18,7 @@
 
 ## Python Version
 
-稳定的 v2.9.x 运行时推荐 Python `3.11`。Python `3.12` 也可接受。Python `3.13` 目前还不是主要测试环境，OCR、ONNXRuntime、图片/PDF 处理等依赖在不同机器上可能出现兼容性差异。
+当前 3.1.6C 运行时推荐 Python `3.11`。Python `3.12` 也可接受。Python `3.13` 目前还不是主要测试环境，OCR、ONNXRuntime、图片/PDF 处理等依赖在不同机器上可能出现兼容性差异。
 
 如果你已经确认当前 `python` 指向的是受支持版本，也可以直接使用 `python -m venv .venv`。如果不确定当前默认版本，优先使用 `py -3.11 -m venv .venv`；没有 `3.11` 时再考虑 `py -3.12 -m venv .venv`。
 
@@ -31,13 +39,13 @@ VP_CONTEXT_EXACT_STALE_SEC=60
 这是单次模型调用的输出上限，不是整个任务的总上限。默认 16384 适合 GPT-5.4 这类大上下文模型的长材料问答；长任务仍应通过多轮 model/tool loop 完成，而不是依赖一次 128K 级别的超大回复。
 `VP_MAX_USER_REQUEST_CHARS` 是当前用户输入的安全字符上限；实际进入模型的内容还会按当前模型 context window 和输出预留做 token 预算裁剪。
 
-Context 状态采用轻量常驻显示：聊天主路径只用缓存或 quick 估算，不再每轮阻塞式精算 tokenizer。`/status` 读取当前 Thread 的状态并打开详情；`/compact` 手动整理旧历史。GPT-5.4 默认使用 272K 可用窗口、90% 自动整理线和 95% 危险线，真实 provider `input_tokens` 优先于本地估算。
+Context 状态采用轻量常驻显示：聊天主路径只用缓存或 quick 估算，不再每轮阻塞式精算 tokenizer。`/status` 读取当前 Thread 的状态并打开详情；`/compact` 手动整理旧历史。VP 内置的 GPT-5.4 / GPT-5.6 配置默认使用 272K 运行窗口、90% 自动整理线和 95% 危险线，真实 provider `input_tokens` 优先于本地估算。
 
 默认建议：不要激活 `Activate.ps1`，直接使用 `.venv\Scripts\python.exe`。
 
 ## Command Safety
 
-`exec_command` 仍然使用保守 allowlist。默认安全列表包含 `printf`、`dir` 和 Windows 程序定位命令 `where`，并且 `VP_ALLOWED_COMMANDS` 是完整覆盖，不是增量追加。默认命令执行仅限当前 project root，且会检查 `rg C:\Windows`、`git -C C:\Temp`、`python C:\Temp\a.py` 这类路径参数；`rm`、`chmod`、`chown`、`curl`、`wget`、`sudo`、`dd`、`kill`、`pkill`、`brew`、`pip`、`pip3` 等高风险命令仍保持阻止。
+`exec_command` 仍然使用保守 allowlist。默认安全列表包含 `printf`、`dir` 和 Windows 程序定位命令 `where`，并且 `VP_ALLOWED_COMMANDS` 是完整覆盖，不是增量追加。命令执行范围由当前权限模式决定，Auto 限于当前 project root，Full Access 可访问完整本机文件系统，且会检查 `rg C:\Windows`、`git -C C:\Temp`、`python C:\Temp\a.py` 这类路径参数；危险删除、提权和下载后直接交给 shell 等模式继续受拦截。供应链命令不应靠放宽 allowlist 绕过审批；具体策略以 Runtime 的工具返回为准。每次具体 `git push` 都需要绑定命令和仓库状态的单次批准。
 
 ## Permission Profiles
 
@@ -100,7 +108,36 @@ Chrome 桌面窗口使用 `app/data/desktop_browser_profile`；Agent 打开 Redm
 ./.venv/bin/python -m desktop.launcher
 ```
 
-Windows 本地构建和其他配置见 [desktop/windows/README.md](desktop/windows/README.md)。
+### 本地构建启动器
+
+在 VP 仓库根目录执行：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\desktop\windows\build.ps1
+```
+
+输出是 `dist\VintageProgrammer.exe`。关闭 VP 后，将它复制到仓库根目录再启动，不要直接从 dist 目录运行。
+
+如果直接拖 EXE 到任务栏时出现 Explorer 重启，改用右键固定，或先创建快捷方式再固定。升级任务栏绑定逻辑后可能需要取消旧固定项并重新固定；检查快捷方式目标仍指向 VP EXE，而不是只有 `chrome.exe --app=...`。
+
+构建细节和其他配置见 [desktop/windows/README.md](desktop/windows/README.md)。
+
+## 更新与重启
+
+- 更新提示针对 VP 仓库当前分支的 upstream；工作台可见时首次约 30 秒后检查，之后每小时检查。不会替业务项目检查更新。
+- 检查只 fetch 对应分支；点击“更新”才执行定向 fetch、`reset --hard` 和 `pull --ff-only`。先提交并推送自己的代码，避免本地修改被覆盖。
+- 更新后选“立即重启 VP”让后台和页面加载新代码。只刷新浏览器不等于重启 Python 后台。
+- 3.1.6C 的这批修改在后端 Python 和前端文件中，不要求重新 build EXE；如果今后修改了打包启动器或 EXE 图标资源，则按该版本说明重新构建并替换。
+- Chrome 的关闭按钮只关闭窗口；要完整退出，使用 VP 右上角 **Exit**。
+- 回答中的普通链接会另开页面，原 VP 窗口保持不变。
+
+## 启动日志
+
+日志位于 `app/data/runtime/desktop-launcher.log`。达到 2 MiB 后在下次启动时清空，旧 `.1` 备份也会清除；不是按时间定期清理，也不是运行中严格限制文件大小。
+
+排查慢启动时同时看 launcher 总耗时和 `[backend-startup]` 各阶段耗时。出现 Uvicorn 的启动提示不等于 launcher 已经通过健康检查；以 `backend_healthy` 和 `cold_launch_finished.ready` 为准。日志可能包含本机路径，分享前请脱敏。
+
+配置文件使用 VP 仓库根目录的 `.env`，不是当前业务项目的文件。`VP_DOTENV_PATH` 可指定其他文件。`.env` 中 `VP_*`、`SSL_CERT_FILE` 和 `REQUESTS_CA_BUNDLE` 覆盖同名 Windows 进程环境变量，其他变量仅在未设置时补充；修改后重启。认证使用对应 `VP_*_API_KEY`，不是通用 `OPENAI_API_KEY`。
 
 ## 最小 `.env`
 
@@ -171,9 +208,9 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 
 正式发布固定走：
 
-- 在 `cleanup/*` 或其他候选分支完成改动
+- 在 `codex/*` 或其他候选分支完成改动
 - 回归通过后合到 `main`
-- 在发布提交上打 annotated tag，例如 `v2.9.15`
+- 在发布提交上打 annotated tag，例如 `3.1.6C`
 - 后续新改动从最新 `main` 再切新的候选分支
 
 完整清单见 [RELEASING.md](RELEASING.md)。

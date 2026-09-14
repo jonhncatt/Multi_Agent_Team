@@ -9,19 +9,33 @@ This document records the reliability behavior that must remain stable after the
 - GPT-5.4 and GPT-5.6 use a 272,000-token default operational window, a 90% automatic compaction threshold, and a 95% effective hard limit. GPT-5.6's 1,050,000-token model maximum is tracked separately. A verified company deployment may override the operational window with `VP_CONTEXT_WINDOW_TOKENS` or the threshold with `VP_CONTEXT_AUTO_COMPACT_TOKEN_LIMIT`.
 - The latest provider-reported `input_tokens` is preferred. When it is unavailable, the Runtime estimates the complete request, including the system prompt, project instructions, compacted summary, transcript, attachments, current request, tool transactions, and selected tool schemas.
 - Pre-turn and mid-turn decisions use the same persisted `ContextWindowStatus`; the model, operational window, thresholds, estimate source, and recommendation therefore cannot drift between the two phases.
-- Retained history uses a token budget rather than a turn/message count. Historical user-started transactions and live assistant-tool-result transactions are kept atomically, so compaction never leaves an orphaned ToolMessage.
+- Retained history uses a token budget rather than a turn/message count. Completed historical and live assistant-tool-result transactions are kept atomically, so compaction never leaves an orphaned ToolMessage.
 - If the provider falls back to a model with a smaller operational window, the Runtime re-evaluates the effective model before the next request and locally compacts old replay when required. This fallback compaction is deterministic and does not add another model call.
 - Tool-call count and the 120K history-noise diagnostic do not trigger full compaction. A tool result larger than the model-visible token cap is stored once under an opaque Thread-scoped `result_ref`; `read_tool_result` returns continuation chunks without rerunning the original tool.
-- Compaction is an internal Thread operation, not a chat Turn. Its minimal persisted record is `Thread.compaction = {generation, summary, compacted_until_item_id, compacted_at}`. `compaction_summary_chars` remains diagnostic metadata only. A Turn paused on an unresolved tool call cannot be compacted.
+- Compaction is an internal Thread operation, not a chat Turn. Its minimal persisted record is `Thread.compaction = {generation, summary, compacted_until_item_id, compacted_at}`. `compaction_summary_chars` remains diagnostic metadata only. Unresolved tool transactions cannot be compacted.
 - Provider-native `/responses/compact` is intentionally not called by the current Chat Completions Runtime. The local compaction seam is isolated so a later Responses API migration can replace it without changing window evaluation or retention semantics.
 
 ## Paused Turn lifecycle
 
 - A command approval or `request_user_input` pauses the current Turn instead of ending it and creating a new user Turn.
 - The Assistant tool call remains in `thread_transcript` without a placeholder result while the UI waits.
-- Approve, decline, and answer actions produce exactly one ToolMessage with the original `tool_call_id`; they never produce synthetic HumanMessages.
+- Approve, decline, and answer actions resolve the original `tool_call_id` with a ToolMessage. A structured user-option answer also gains a visible `ui_only` user record after the tool result exists; that display copy is excluded from model replay, so it neither duplicates the answer nor interrupts tool-result ordering.
 - The active Plan is retained only while the Turn is paused. Once the Turn ends, the Plan remains available through transcript history but is not restored as the next Turn's active Plan.
 - Turn continuation is model-led. Approval and structured-input pauses remain Runtime-owned, and user cancellation still ends the Turn.
+
+## Subagent lifetime and compaction memory
+
+Subagent records/results live under `app/data/subagents/`, scoped to the Thread. A normal parent response does not imply that every child finished; a later parent run can wait on the original ID. A failed/cancelled parent run cleans up its owned active children.
+
+In a live backend, a done Future is authoritative execution evidence. A completion callback reconciles an otherwise active record to completed, cancelled, or failed and persists the result. A still-running Future, a wait timeout, or a stop request by itself is not proof of completion. Waiting can be cancelled without falsely completing another run's child.
+
+After a backend restart, the old Future no longer exists. The new manager compares persisted owner runtime IDs and marks old active records `interrupted_by_restart`; already persisted results remain available.
+
+Before each main-model request, `_refresh_subagent_model_state` rebuilds a compact authoritative snapshot from the manager. It includes IDs, tasks, statuses and result availability, independently of the conversation summary. Insertion is before history, never inside a tool transaction. This restores the evidence needed to reuse children after compaction; it is not a semantic similarity blocker on spawning new work.
+
+## Cancellable code search
+
+`app/code_search.py` executes both rg and Python fallback search in an owned worker. The parent checks cancellation and a 20-second total deadline; timeout returns partial results marked incomplete. Dependencies/caches are skipped by default, Git ignore rules are respected in worktrees, and eligible file size is capped at 16 MiB. Large-line handling also bounds the Python fallback. These scope limits must not be interpreted as an exhaustive search of every byte in the project.
 
 ## Technical Turn status
 
@@ -93,6 +107,12 @@ After this recovery change, the necessary company live regression is the previou
 ```
 
 Compare `success_rate_percent`, `failed_tool_calls`, `average_tool_calls_per_attempt`, `recovery_success_rate_percent`, and `completion_state_accuracy_percent` with the earlier baseline. Run this from Developer PowerShell for VS 2022 only when the selected case needs the Visual Studio compiler environment; this multi-file case uses its portable verifier.
+
+## Per-Thread settings and answer links
+
+The frontend stores model, provider, reasoning effort and service tier by Thread in browser localStorage. New Threads copy the creating Thread's settings; temporary creation IDs are migrated to persistent IDs. Sending, queued execution and approval continuation take a settings snapshot from the request's owner Thread, not the currently visible Thread. Reload persistence applies to that browser profile only.
+
+Rendered Markdown still passes through DOMPurify. Non-anchor links then receive `target="_blank"` and `rel="noopener noreferrer"`; same-page anchors stay local.
 
 ## Frontend run visibility
 

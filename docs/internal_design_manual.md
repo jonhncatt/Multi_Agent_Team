@@ -55,6 +55,7 @@ Trace 不是第二份聊天历史，也不参与下轮模型记忆。旧 `app/da
 messages = [
   SystemMessage(agent spec + RuntimeBoundary),
   optional project instructions,
+  optional Subagent state snapshot rebuilt from Thread records,
   optional compaction summary,
   uncompressed typed transcript,
   optional attachment context,
@@ -94,6 +95,9 @@ Harness 负责：
 | --- | --- | --- | --- |
 | Thread | `app/data/sessions/` | 可继续的对话历史 | transcript 的有效部分会发送 |
 | Turn Trace | `app/data/turn_traces/` | 技术调试和 UI 按需详情 | 不作为历史发送 |
+| Subagent records | `app/data/subagents/` | Thread 级子任务状态和保存结果 | 派生精简状态，结果按需读取 |
+| Tool results | `app/data/tool_results/` | 截断的长工具结果 | 通过 `read_tool_result` 分段读取 |
+| Model selection | 当前浏览器 localStorage | 每 Thread 的模型、provider、推理强度、Priority | 作为请求设置，不作为会话消息 |
 | 旧 Run | `app/data/runs/` | 老 Session 兼容读取 | 否 |
 | Session metadata | `app/data/session_meta/` | 列表和标题快速读取 | 否 |
 | Skill runtime cache | `app/data/runtime/skills/` | 索引、开关和迁移状态 | 只派生轻量 Skill 列表 |
@@ -105,9 +109,11 @@ Harness 负责：
 
 - 当前上下文来源是 Thread transcript，不是旧 Harness 六要素。
 - provider 返回的真实 `input_tokens` 优先于本地估算。
-- GPT-5.4 默认使用 272,000 token 的可用窗口；默认自动压缩线为 90%，危险线为 95%。公司部署验证后可覆盖窗口或阈值。
+- VP 内置的 GPT-5.4 / GPT-5.6 配置默认使用 272,000 token 的运行窗口；默认自动压缩线为 90%，危险线为 95%。公司部署验证后可覆盖窗口或阈值。
 - 压缩是独立内部操作，不创建聊天 Turn，也不会切断尚未闭合的 tool call。
 - 持久压缩记录只保存 generation、summary、切点和时间；切点之后仍使用完整 typed transaction。
+
+代码搜索在 `app/code_search.py` 的独立 worker 中执行；rg 与 Python 回退都可取消，搜索总时限 20 秒，超时返回明确标记的部分结果。默认依赖目录排除和文件大小上限是搜索范围限制，不代表遗漏范围内没有匹配。
 
 ## 7. 权限模式
 
@@ -139,8 +145,10 @@ skills/team/<name>/SKILL.md      # 团队维护，随 VP Git 仓库共享
 - 同一 Thread 同一时刻只有一条主模型请求链。
 - 运行中追加的文本先排队，在安全模型边界写入当前 Turn，不启动并行主模型请求。
 - Subagent 由模型通过 `spawn_subagent` 按需创建，使用独立精简上下文。
-- 第一版 Subagent 为单层、只读、可后台并行；主 Agent 通过 `wait_subagents` 收集精简结果。
-- Turn 结束前 Runtime 会收束子任务，不留下孤儿执行。
+- Subagent 为单层、只读、可后台并行；主 Agent 通过 `wait_subagents` 收集精简结果。
+- 正常主 Turn 结束后，活动 Subagent 继续保留 Thread 级记录，后续运行可用原 ID 等待；失败或取消时清理该运行拥有的活动子任务。
+- Future 已结束而记录未结束时补写终态。后台重启后旧活动任务标记为 `interrupted_by_restart`，已保存结果仍可读。
+- 压缩后不依赖摘要记住 spawn：每次主模型请求前重建子任务 ID、任务和最新状态。
 
 详见 [Agent 工作流](agent_workflow_runtime.md)。
 

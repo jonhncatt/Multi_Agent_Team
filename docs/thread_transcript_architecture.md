@@ -117,6 +117,7 @@ Runtime 用切点跳过较早 transcript，发送 summary 和切点后的完整�
 ```text
 messages = [
   SystemMessage(agent spec + runtime boundary),
+  HumanMessage([subagent_state] ...),             # 从 Thread 子任务记录重新构建，不依赖压缩摘要
   HumanMessage([project_instructions] ...),       # 仅在当前项目显式绑定 Project Profile 时
   HumanMessage([compaction_summary] ...),         # 仅在发生过压缩时
   ...未被压缩的 typed transcript messages,
@@ -159,8 +160,14 @@ Trace 的 `steps` 按 transcript 顺序保存 `item_id`。例如 Assistant `a1` 
 - 命令审批与 `request_user_input` 属于原 Turn，不创建新 Turn。
 - 等待时只把最小恢复信息保存在 `pending_interaction`；Plan 快照只在这里为恢复当前 Turn 而保留。
 - 用户批准时执行原 tool call，写入真实 ToolMessage；用户拒绝时写入一个 `user_declined` ToolMessage。
-- 用户决定不是 HumanMessage，Harness 检查点也不是 HumanMessage。
+- 用户决定以 ToolMessage 进入模型。`request_user_input` 的答案另有 `ui_only` 用户记录供聊天页面显示；不参与模型回放，也不会插断工具结果序列。Harness 检查点不是新的用户指令。
 - Turn 正常结束后清空 `pending_interaction`。旧 Plan 仍作为 `update_plan` 工具事务留在 transcript 中；新 Turn 是否重建 Plan 由模型决定。
+
+## 与 Subagent 记录的关系
+
+Subagent 的 ID、任务、状态和结果独立保存在 `app/data/subagents/`。压缩影响下一次模型回放，不删除这些执行记录。每次主模型请求前，Runtime 重新生成 `[subagent_state]`；模型可以用原 ID 等待活动任务或读取已保存结果。旧后台拥有的活动任务在重启后转为 `interrupted_by_restart`。
+
+删除 Thread 时还会清理关联 Subagent 记录和父/子任务的 `app/data/tool_results/` 长结果，不能仅删除聊天 JSON 后留下孤立数据。
 
 ## 旧 Session 自动迁移
 

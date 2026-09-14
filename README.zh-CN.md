@@ -4,7 +4,7 @@
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Backend](https://img.shields.io/badge/backend-FastAPI-green)
 ![Browser](https://img.shields.io/badge/browser-Playwright-green)
-![Providers](https://img.shields.io/badge/providers-OpenAI%20%7C%20compatible%20%7C%20OpenRouter%20%7C%20Ollama-purple)
+![Providers](https://img.shields.io/badge/providers-OpenAI%20%7C%20compatible%20ecosystem%20%7C%20Ollama-purple)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 
 一个本地优先的 AI Agent 工作台，重点是可观察的 activity tracing（执行过程追踪）、可编辑 agent specs（Agent 规范）和 harness-validated execution（由 harness 验证的执行链路）。
@@ -13,15 +13,41 @@
 它希望让用户看到 Agent 在一个 turn（用户一轮请求）里到底经历了什么：
 **用户请求 -> 模型行动 -> harness 验证 -> 工具执行 -> 观察结果 -> 最终回答**
 
-[中文首页](README.md) · [English README](README.en.md) · [日本語 README](README.ja.md) · [Windows 指南](README.windows.md) · [文档索引](docs/README.md) · [发布流程](RELEASING.md)
+[English README](README.en.md) · [日本語 README](README.ja.md) · [中文首页](README.md) · [Windows 指南](README.windows.md) · [文档索引](docs/README.md) · [发布流程](RELEASING.md)
 
 当前稳定版本：`3.1.6C`
 
+## 先从这里开始
+
+- **首次安装：** [macOS / Linux 快速启动](#快速启动) · [Windows / EXE 指南](README.windows.md)
+- **配置模型：** [最小配置](#env-最小配置) · [.env.example](.env.example)
+- **更新与排障：** [仓库更新](#仓库更新) · [排障指南](docs/observability/troubleshooting.md)
+- **本版变更：** [3.1.6C 发布说明](docs/releases/3.1.6C.zh-CN.md)
+
+## 日常使用
+
+1. 在 Projects 添加本机项目目录，再创建 Thread。Projects 和 Threads 是两个层次；业务项目可以与 VP 安装仓库分开。
+2. 输入区的模型/推理面板可选择模型和推理强度；闪电切换 Priority。是否开放由 VP 的模型能力判断决定，实际支持仍取决于公司的模型部署。
+3. 模型、服务商、推理强度和 Priority **按 Thread 独立保存到当前浏览器**，刷新后恢复；不承诺跨浏览器或跨电脑同步。新 Thread 继承创建时的选择，之后互不影响。
+4. 命令审批、任务更新审批和用户选项询问是不同交互。选项回答会显示在对话中，方便核对；模型收到的是原工具调用的结果，不会收到一条重复指令。
+5. 执行过程可展开工具、文件修改和 Subagent 记录。回答中的普通链接另开页面，不替换 VP；页内锚点仍留在原页。
+
+不同主 Thread 默认最多并行运行 **5** 条，超过后排队；每个主 Turn 默认最多并行 **3** 个 Subagent。这两项限制独立，分别由 `VP_MAX_CONCURRENT_RUNS` 和 `VP_MAX_CONCURRENT_SUBAGENTS` 配置。
+
+## 停止、继续和长任务
+
+- “停止”用于中断当前运行，包括模型请求、受控命令和代码搜索；Windows 只清理 VP 所管理运行的子进程树，不按程序名称批量结束其他应用。
+- 后续“继续”依据已保存历史重新推进，不是恢复被终止进程的内存现场。
+- Subagent 状态属于 Thread：当前后台中尚未完成的任务可继续等待，已完成任务返回保存结果。后台重启后旧活动任务会标记为 `interrupted_by_restart`，不会被当成仍在工作。
+- 压缩按完整的消息/工具事务替换旧模型上下文，保留 checkpoint 和近期内容；未闭合的工具调用不会被切开。原始持久记录与模型下一次实际收到的上下文并不是一回事。
+- 每次主模型请求前，Runtime 重新附上 Subagent 的 ID、任务和最新状态，不依赖压缩摘要记住 spawn 消息。
+- `search_codebase` 优先使用可用的 rg；没安装 rg 时使用 Python 回退。两条路径都可取消，整次搜索时限为 20 秒；超时返回已有结果并标明不完整。默认跳过常见依赖/缓存目录并限制大文件；需要查这些目录时显式缩小搜索根目录。
+
 ## Stable Runtime
 
-当前分支使用独立的全局 Skill Registry：支持只读 Built-in Skills 和通过 Vintage Programmer Git 仓库共享的 Team Skills。runtime 注入轻量 `[available_skills]` 和每个启用 Skill 的 `SKILL.md` 路径；模型用普通 `read_file` 读取完整说明，用普通 `exec_command` 执行附属脚本。
+当前稳定运行时使用独立的全局 Skill Registry：支持只读 Built-in Skills 和通过 Vintage Programmer Git 仓库共享的 Team Skills。runtime 只注入带路径的轻量 `[available_skills]`；模型命中后用普通 `read_file` 按需读取完整 `SKILL.md`。
 
-`save_skill` 只把可复用流程写入 VP 仓库的 `skills/team/<name>/SKILL.md`，与当前业务项目无关；内置 `create-team-skill` 用于指导 Team Skill 创作，Built-in Skills 保持只读。
+`save_skill` 只把可复用流程写入 `skills/team/<name>/SKILL.md`；保存位置由 VP 安装仓库决定，与当前选择的业务项目无关。内置 `create-team-skill` 指导 Agent 生成 Team Skill，Built-in Skills 保持只读。
 
 ## Max Output Tokens
 
@@ -31,16 +57,22 @@
 VP_MAX_OUTPUT_TOKENS=16384
 VP_MAX_USER_REQUEST_CHARS=4000000
 VP_MAX_ATTACHMENT_CHARS=1000000
+VP_CONTEXT_WINDOW_TOKENS=0
+VP_MODEL_MAX_CONTEXT_WINDOW_TOKENS=0
+VP_CONTEXT_AUTO_COMPACT_TOKEN_LIMIT=0
 VP_CONTEXT_AUTO_COMPACT_RATIO=0.9
 VP_CONTEXT_DANGER_COMPACT_RATIO=0.95
 VP_CONTEXT_HISTORY_SOFT_LIMIT_TOKENS=120000
 VP_CONTEXT_EXACT_STALE_SEC=60
+VP_TOOL_OUTPUT_TOKEN_LIMIT=10000
 ```
 
 这个值是单次模型调用的输出上限，不是整个任务的总上限。默认 16384 适合 GPT-5.4 这类大上下文模型的长材料问答；长任务仍应通过多轮 model/tool loop 完成，而不是依赖一次 128K 级别的超大回复。
 `VP_MAX_USER_REQUEST_CHARS` 是当前用户输入的安全字符上限；实际进入模型的内容还会按当前模型 context window 和输出预留做 token 预算裁剪。
 
-Context 状态采用 Codex 风格的轻量常驻显示：聊天主路径只使用缓存或 quick 估算，不再每轮阻塞式精算 tokenizer。`/status` 会读取当前 thread 的 context 状态并打开详情；`/compact` 会手动整理旧历史并在运行记录中显示 context compaction 事件。自动整理默认在预计使用达到窗口 90% 后 exact 复核，95% 进入危险整理线；真实 provider `input_tokens` 可用时优先于本地完整 payload 估算。`VP_CONTEXT_HISTORY_SOFT_LIMIT_TOKENS` 只用于旧聊天/工具输出噪音，不适用于当前用户输入或附件原文。
+主 Thread 的全局并发运行上限默认是 `5`，因此最多可同时执行五条不同 Thread；超过上限的运行会进入队列。可用 `VP_MAX_CONCURRENT_RUNS` 在 `1–32` 之间覆盖此值。它与单个主 Turn 内的 `VP_MAX_CONCURRENT_SUBAGENTS` 子 Agent 并发上限相互独立。
+
+Context 状态采用 Codex 风格的轻量常驻显示：聊天主路径先使用缓存或 quick 估算，只在接近阈值时做精确 tokenizer 复核。轮前与轮中共用同一个 `ContextWindowStatus`；历史和实时工具事务都按 token 预算保留，不再按固定 turn/message 数裁剪。provider 若降级到更小窗口模型，会在下一次请求前重算并用本地确定性摘要压缩旧 replay，不额外调用模型。`/status` 会读取当前 thread 的 context 状态并打开详情；`/compact` 会手动整理旧历史并在运行记录中显示 context compaction 事件。GPT-5.4 和 GPT-5.6 默认按 272K 运行窗口、90% 自动整理线和 95% 硬保护线处理；GPT-5.6 的模型最大窗口会单独显示，不会自动成为运行窗口。真实 provider `input_tokens` 可用时优先于本地估算。只有在公司部署的可用窗口已经确认时，才设置 `VP_CONTEXT_WINDOW_TOKENS` 或绝对阈值 `VP_CONTEXT_AUTO_COMPACT_TOKEN_LIMIT`；值为 `0` 表示使用内置默认值。`VP_CONTEXT_HISTORY_SOFT_LIMIT_TOKENS` 仅保留为历史噪音诊断，不再单独触发全文压缩。单个工具结果进入模型前受 `VP_TOOL_OUTPUT_TOKEN_LIMIT` 限制；被省略的完整结果只在实际截断时写入 Thread 侧存储，并可通过 `read_tool_result` 续读，不会重跑原工具。当前 Chat Completions Runtime 不调用 `/responses/compact`，该能力留到以后迁移 Responses API 时接入。
 
 ## Python Commands
 
@@ -48,19 +80,46 @@ Context 状态采用 Codex 风格的轻量常驻显示：聊天主路径只使�
 
 ## Python Version
 
-稳定的 v2.9.x 运行时推荐使用 Python `3.11`。Python `3.12` 也可接受。Python `3.13` 目前还不是主要测试环境，OCR、ONNXRuntime、图片/PDF 处理等原生 wheel 依赖在不同平台上可能出现兼容性问题。
+当前稳定运行时推荐使用 Python `3.11`。Python `3.12` 也可接受。Python `3.13` 目前还不是主要测试环境，OCR、ONNXRuntime、图片/PDF 处理等依赖在不同平台上可能出现兼容性问题。
 
 ## Command Safety
 
-`exec_command` 继续使用保守 allowlist，`VP_ALLOWED_COMMANDS` 是完整覆盖，不是增量追加。命令执行受当前权限和路径边界约束，并检查 `rg /etc`、`git -C /tmp`、`python /tmp/a.py` 这类路径参数。任何具体 `git push` 在所有允许 shell 的权限档位下都必须逐次审批，审批绑定精确命令、仓库、remote URL 指纹、branch 和 HEAD。Skill 或文件里的命令文字不构成执行授权；危险删除和下载后直接交给 shell 的模式仍保持阻止。
+`exec_command` 继续使用保守 allowlist，默认安全列表包含 `printf`、`dir` 和 Windows 程序定位命令 `where`，并且 `VP_ALLOWED_COMMANDS` 是完整覆盖，不是增量追加。默认命令执行仍受当前权限模式和路径边界约束，且会检查 `rg /etc`、`git -C /tmp`、`python /tmp/a.py` 这类路径参数。`curl`、`wget`、`pip install`、`npm install`、`git pull/fetch` 等供应链相关命令默认不在安全列表；如果管理员显式加入 allowlist，Full Access 下也会先进入单次审批。`git push` 在任何允许 shell 的权限模式下都必须逐次审批，审批绑定当前仓库、remote、remote URL 指纹、branch、HEAD 和精确命令；其中任一项变化都会使 token 失效。Skill、源码或文档中出现命令文字不构成执行授权。危险删除、`sudo rm`、下载脚本 pipe shell 等模式仍会被硬拒绝。
 
 ## Session = Thread
 
-`Session` 现在就是持久 Thread。模型输入以 typed transcript 回放真实的 `user`、`assistant` 和 `tool` 消息，不再构造六要素 `ModelContext`。Thread 保存可继续的历史，Turn Trace 只保存技术调试事实；旧 Session 会自动迁移并保持原 ID 与 API 兼容。
+`Session` 现在就是一条持久 Thread。模型输入按 typed transcript 回放真实的 `user`、`assistant`、`tool` 消息，最后追加当前用户消息；不再构造六/八要素 `ModelContext` JSON，也不再调用任务关系分类器。当前目录和权限合并进唯一的 SystemMessage；只有用户显式绑定的 Project Profile 才提供 `AGENTS.md` 项目说明，压缩摘要和附件也按需作为带来源标记的上下文消息提供。Thread 文件只保存 transcript、最小 compaction、活动附件、待处理交互和精简 Trace 引用；`task_state`、`work_cursor`、`thread_memory`、`current_task_focus` 等旧 Harness 语义状态不再持久化。`turns` 只在加载后由 transcript 临时投影，兼容现有 API 和前端。
+
+磁盘目录继续使用 `app/data/sessions/`，所以现有 URL、Session ID 和聊天记录不变。旧 Session 首次打开时会自动备份并迁移为 Thread V4，无需手动脚本。命令审批和 `request_user_input` 都暂停原 Turn，用户决定后以同一 `tool_call_id` 的 ToolMessage 恢复。选项回答还会保存一份仅供 UI 展示的用户消息；这份 `ui_only` 记录不再重复发送给模型。Plan 在暂停期间保留，Turn 结束后只留在历史中。上下文压缩是 Thread 内部的替换历史操作；它不创建聊天消息，也不会压缩尚未闭合的 tool call。新执行的技术事实保存在 `app/data/turn_traces/<thread_id>/<turn_id>.json`，旧 `runs` 仅用于读取兼容。开发者调试以完整 Thread 历史为主体，工具结果按需展开对应 Trace，System Prompt 单独按需查看。
+
+## 仓库更新
+
+工作台加载后约 30 秒首次检查，之后每小时检查一次；页面隐藏时跳过，重新可见时按间隔补查。检查的是 **VP 安装仓库当前分支的 upstream**，不是当前业务项目，也不固定绑定 GitHub 或 `origin`；因此可用于 GitLab 和自定义远端名。
+
+检查会 fetch 对应分支并更新 remote-tracking ref，但不会 reset 工作区或自动安装更新。有新提交时，“更新”按钮显示提示。点击更新才会应用：定向 `git fetch --no-tags` → `git reset --hard <upstream-ref>` → `git pull --ff-only`。当前分支未配置 upstream 时，代码会尝试默认远端和同名分支；建议先正确配置跟踪关系。
+
+**更新会丢弃已跟踪文件的本地未提交修改，并使当前分支指向远端版本。** 自己改过代码时先提交并推送到分支，不要把更新按钮当作保留本地改动的普通 pull。更新检查不拉 tags，避免旧 tag 冲突阻塞检查。
+
+桌面 EXE 更新成功后提供“关闭”和“立即重启 VP”；重启会替换后台，在当前窗口显示等待界面，新后台就绪后刷新。窗口不是每次都会重新弹出冷启动 Preparing 页。
 
 ## Permission Profiles
 
-默认权限 profile 是 `Auto`：读写当前项目并在项目内运行安全命令，网络关闭。`Default` 是当前项目只读模式；`Full Access` 可读写完整本机文件系统、在任意本机目录运行安全命令并访问网络，不需要额外路径环境变量。命令 allowlist、危险命令拦截、Builtin Skill 只读和外部写入审批仍然有效。
+默认权限模式是 `Auto`：可读写当前项目、可在当前项目内运行安全命令，但网络关闭。`Default` 是只读安全模式，仅允许读取/搜索工具，不写文件、不运行 shell、不开网络；`Full Access` 是最大信任模式，可直接读写完整本机文件系统、在任意本机目录运行安全命令并启用网络，不需要额外路径环境变量。网络下载或解压得到的代码会被标记为 tainted，执行前需要一次性确认；命令 allowlist、危险命令拦截、Builtin Skill 只读和外部写入审批仍然有效。
+
+## Browser With Local Chrome Profile
+
+默认 `browser_open` 仍使用 Playwright 管理的 headless Chromium。企业环境如果拦截 Chromium 安装或执行，可以改用本机已安装的 Google Chrome，并使用一个专用 profile 保存登录态：
+
+```env
+VP_BROWSER_MODE=chrome_profile
+VP_BROWSER_CHANNEL=chrome
+VP_BROWSER_HEADLESS=false
+VP_BROWSER_USER_DATA_DIR=app/data/browser_profile
+VP_BROWSER_CHROMIUM_SANDBOX=true
+VP_BROWSER_DISABLE_PASSWORD_MANAGER=true
+```
+
+首次打开 Redmine、内部 wiki 等需要登录的站点时，Chrome 会以可见窗口打开。用户自己输入账号密码完成登录；后续 agent 可以在这个已登录 profile 里点击页面、读取当前页面文本和截图。VP 后台只启动一个使用该 profile 的 persistent Chrome context，每个 Thread 最多复用其中一个独立 tab；这样不同 Thread 共享登录态，但不会互相覆盖页面或争抢 Chrome profile 锁。`app/data/browser_profile` 是 VP 专用目录；不要把个人主 Chrome profile 直接作为 `VP_BROWSER_USER_DATA_DIR`。`VP_BROWSER_DISABLE_PASSWORD_MANAGER=true` 会禁止 Chrome 在 VP profile 里提示保存密码，但不会阻止站点 cookie/session 保留登录态。`VP_BROWSER_CHROMIUM_SANDBOX=true` 会避免 Chrome 显示 `--no-sandbox` 安全警告；如果某台机器的策略导致 Chrome 无法启动，再临时改成 `false` 排查。
 
 ## 这是什么
 
@@ -72,7 +131,7 @@ Vintage Programmer 是一个本地运行的 AI Agent 工作台，默认主 agent
 - 可观察的 activity timeline（执行时间线）和 progress checklist（进度清单）
 - harness 侧的工具验证与执行
 - 可直接编辑的本地 Markdown agent 规范
-- 可启用、可绑定到主 agent 的本地 skills
+- 全局 Built-in Skills 与 Team Skills，按需加载完整 `SKILL.md`
 - 面向 `zh-CN`、`ja-JP`、`en` 的多语言文案层
 
 它不是一个只包一层聊天界面的壳，而是一个偏工程化、可观察、可调试的本地 Agent 工作台。
@@ -101,10 +160,10 @@ Vintage Programmer 更关注回答背后的执行过程。
   由模型提出动作，由 runtime 验证工具名、参数和执行边界，再决定是否执行。
 - **可编辑 Agent 规范**  
   主 agent 的行为由本地 Markdown 文件定义，可直接查看和修改。
-- **本地 Skills 系统**  
-  可以在工作区内新增、启用、关闭和绑定 skills。
+- **全局 Skills 系统**
+  Built-in Skills 随产品发布且只读；Team Skills 随 Vintage Programmer Git 仓库由团队共同维护，不会写入当前业务项目。
 - **经过源码验证的 provider 配置**  
-  当前 `.env.example` 和源码确认支持 OpenAI、OpenAI-compatible 网关、OpenRouter 和本地 Ollama。
+  README 和 `.env.example` 给出 OpenAI、OpenAI-compatible 网关、OpenRouter 和本地 Ollama 的常用配置示例；源码 provider presets 还覆盖 DeepSeek、Qwen、Moonshot 和 Groq。
 - **多语言 UI 和文档**  
   用户可见文本通过 locale layer（本地化层）支持 `zh-CN`、`ja-JP`、`en`。
 
@@ -115,13 +174,15 @@ Vintage Programmer 更关注 Agent 的执行过程可见性。
 
 默认可以看到：
 
-- 模型当前理解和动作提案
+- 当前 Plan 和最近执行进展
 - harness 验证结果
 - 工具调用参数
 - 工具返回结果和观察
 - 进度 checklist
-- runtime 统计信息
+- 运行耗时和等待状态
 - 最终回答
+
+需要排查工具行为时，可在执行过程内展开“开发者调试”：先查看完整 Thread 历史，再从具体 Tool Item 展开对应 Trace；System Prompt 也只在主动打开时加载和显示。
 
 因此它更适合用来开发、调试和演示 AI Agent，而不只是把模型当成聊天框。
 
@@ -171,7 +232,9 @@ Windows 版本的推荐启动方式见 [README.windows.md](README.windows.md)。
 
 ## `.env` 最小配置
 
-复制 `.env.example` 为 `.env`，然后只保留一个 provider profile（模型提供方配置）。
+首次安装时复制 `.env.example` 为 `.env`，至少配置一个 provider；`VP_LLM_PROVIDER` 指定默认提供方。也可以配置多个提供方，再在 Thread 中选择，不必删除其他有效配置。
+
+配置从 VP 安装仓库根目录加载，不读取当前业务项目的 `.env`。`VP_DOTENV_PATH` 可指定其他配置文件，修改后重启生效。`.env` 中的 `VP_*`、`SSL_CERT_FILE`、`REQUESTS_CA_BUNDLE` 会覆盖同名进程环境变量；其他变量只补充环境中不存在的值。模型认证使用对应 `VP_*_API_KEY`，不要以为通用 `OPENAI_API_KEY` 会自动替代它。
 
 ### OpenAI 官方
 
@@ -181,7 +244,7 @@ VP_OPENAI_API_KEY=your_key
 VP_OPENAI_DEFAULT_MODEL=gpt-5.4
 ```
 
-Vintage Programmer 现在只使用显式 provider API key 配置，不再自动回退到本地账号认证文件。
+Vintage Programmer 使用显式的 provider API key 配置，不再从本地账号登录状态自动回退认证。
 
 ### OpenAI-compatible 网关
 
@@ -212,14 +275,23 @@ VP_OLLAMA_API_KEY=ollama
 VP_OLLAMA_DEFAULT_MODEL=qwen2.5-coder:7b
 ```
 
+### 手动更新模型预设
+
+Settings 的“模型预设”旁提供“更新列表”按钮。只有点击该按钮时，VP 才会向当前 Provider 的 `/models` 接口查询可用模型；查询结果保存在本机缓存，并与 `.env` 中的默认模型和静态预设合并。启动 VP、打开 Settings 和切换项目都不会自动访问模型列表接口。
+
+如果公司的 OpenAI-compatible 网关没有开放 `/models`，按钮会显示失败，但不会覆盖已有预设；此时仍可在“自定义模型”中填写部署名称。
+
 更多选项见 [.env.example](.env.example)。
 
-## 接口说明
+## 常用接口
 
 这些都是本地应用自己的 HTTP 接口，不是 OpenAI 官方 API：
 
 - `GET /api/health`
+- `GET /api/bootstrap`
 - `GET /api/runtime-status`
+- `GET /api/projects`
+- `GET /api/threads`
 - `POST /api/chat`
 - `POST /api/chat/stream`
 - `GET /api/workbench/tools`
@@ -239,16 +311,70 @@ VP_OLLAMA_DEFAULT_MODEL=qwen2.5-coder:7b
 
 每个目录包含 `soul.md`、`identity.md`、`agent.md`、`tools.md`。根目录同名文件仅作为旧 workspace fallback。
 
+四个文件的职责边界是：
+
+- `soul.md`：agent 的工作风格，例如工程化、结果导向、证据优先。
+- `identity.md`：agent 在工作台里的岗位和职责边界。
+- `agent.md`：执行协议，说明收到任务后如何判断、取证、修改、计划和交付。
+- `tools.md`：工具路由和工具使用原则，说明什么时候使用 `read_file`、`search_codebase`、`apply_patch` 等工具。
+
+`agent.md` 的 frontmatter 使用 `tool_scope` 表达 agent 的候选工具范围，当前可选值是 `all | read_only | none`。具体工具清单不再写在 `agent.md` 的 `allowed_tools` 里，而是来自 runtime/backend 的工具注册表，并继续受 `.env`、permission profile、RuntimeBoundary 和 ActionValidator 约束。
+
 ## Skills
 
-全局目录固定为：
+VP 当前支持两类 skills：
 
 ```text
-skills/builtin/<skill_name>/SKILL.md
-skills/team/<skill_name>/SKILL.md
+skills/builtin/<skill>/SKILL.md   # 产品维护、只读、全局发现
+skills/team/<skill>/SKILL.md      # 团队维护、随 VP Git 仓库分发
 ```
 
-两类 Skill 都不绑定具体 Agent。当前由 Vintage Programmer 发现启用的轻量 metadata，选中后再加载完整正文。提交 Team Skill 前运行 `python scripts/validate_skills.py`。
+仓库内置了一个启用的 Built-in Skill，用来指导 Agent 创建 Team Skill：
+
+- `skills/builtin/create-team-skill/SKILL.md`
+
+仓库还保留了一个禁用的 Team sample：
+
+- `skills/team/sample-team-skill/SKILL.md`
+
+两类 Skill 都独立于具体 Agent 存储和发现。当前只有 `vintage_programmer` 使用它们；未来其他 Agent 可以通过同一个 Registry 发现，再按能力选择。Built-in/Team 只表示维护来源与可变性，不绑定 Agent。
+
+`SKILL.md` 只支持一个规范格式：
+
+```markdown
+---
+name: repo-triage
+description: Use when the user wants to inspect repository structure, recent changes, risks, or prepare a code investigation plan.
+enabled: true
+---
+
+# Repo Triage
+
+完整 skill 指令写在这里。
+```
+
+必填字段是 `name` 和 `description`；`enabled` 可省略，默认启用。不再支持旧字段 `id`、`title`、`summary`、`bind_to`。
+
+runtime 启动和每次 run 只读取轻量 metadata，并把启用 Skill 的规范 key、名称、描述和 `SKILL.md` 绝对路径放入 `[available_skills]`。模型判断某个 Skill 与任务相关后，使用普通 `read_file` 读取完整 `SKILL.md`，再按其中的相对路径读取 `references/`、`scripts/` 等资源；没有额外的加载或解锁状态。skill key 形如 `builtin:create-team-skill` 或 `team:protocol-analysis`。如果两个目录存在同名 Skill，管理 API 中未限定作用域的引用会被拒绝，必须使用完整 key。
+
+Agent 可以调用 `save_skill` 创建 Team Skill 或整体替换 `SKILL.md`；已有 Team Skill 的 `SKILL.md`、`scripts/` 和 `references/` 使用普通 `apply_patch` 修改。Runtime 的写权限开启时，已启用 Team Skill 目录会加入可写边界；模型根据完整 thread 判断是否应当修改，Harness 不解析“更新”“做吧”或否定句等自然语言关键词。团队也可以通过管理界面或正常 Git 评审流程改进 Team Skill。只有 Built-in Skill 始终只读。旧的 `system:` / `workspace:` key 和 API scope 暂时分别作为 `builtin:` / `team:` 的兼容别名。
+
+已启用的 Skill 如果包含脚本，Agent 使用普通 `exec_command` 和 Skill 目录下的绝对脚本路径，直接执行 Python、Shell、Node 或 PowerShell 脚本。脚本路径受统一 `RuntimeBoundary` 校验，执行工作目录仍是当前业务项目；禁用 Skill 不展示，也不会被加入本轮 Skill 读取/命令范围。`load_skill` 和 `run_skill_script` 不再属于模型工具。
+
+直接运行 Skill 脚本时，Runtime 注入四个非密钥定位变量：`VP_SKILL_ROOT`、`VP_SKILL_SCRIPT`、`VP_PROJECT_ROOT`、`VP_PROJECT_CWD`。Skill 自带资源必须基于脚本自身位置或 `VP_SKILL_ROOT` 解析，业务输入输出基于 `VP_PROJECT_ROOT` / `VP_PROJECT_CWD`；不得依赖进程 cwd 去寻找 Skill 文件。
+
+Skill 所需密钥统一写在 VP 安装仓库根目录的 `.env`，或由启动 VP 的进程环境提供。VP 不再读取启动目录或当前业务项目的 `.env`；如果需要把凭证文件放在仓库外，可在启动进程中设置绝对路径 `VP_DOTENV_PATH`。`.env` 只在 VP 启动时加载，修改后需要重启。Skill 脚本只读取例如 `os.environ["REDMINE_API_KEY"]` 这样的继承环境变量，不得搜索、读取、解析、打印或记录 `.env` 和密钥值。
+
+完整的脚本模板和迁移清单见 [`docs/skill_runtime_contract.md`](docs/skill_runtime_contract.md)。
+
+团队提交前运行：
+
+```bash
+python scripts/migrate_skills.py --json
+python scripts/validate_skills.py
+```
+
+校验会检查 schema、重名、疑似凭证和硬编码个人绝对路径。建议通过 GitLab Merge Request 审核 Team Skill，再由其他同事 pull 使用。
 
 ## Inline Code
 
@@ -282,12 +408,13 @@ skills/team/<skill_name>/SKILL.md
 - [文档索引](docs/README.md)
 - [发布流程](RELEASING.md)
 - [内部设计手册](docs/internal_design_manual.md)
+- [Runtime 可靠性说明](docs/runtime_reliability.md)
 
 ## 发布流程
 
 正式发布流程当前是：
 
-1. 在 `cleanup/*` 或其他候选分支完成改动。
+1. 从最新 `main` 创建 `codex/*` 发布候选分支。
 2. 保持本地 runtime state（运行时本地状态）不进入 Git。
 3. 在本地跑 release gates（发版检查）。
 4. 向 `main` 发起 PR。

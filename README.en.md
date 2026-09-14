@@ -17,6 +17,37 @@ Instead of hiding the process, it exposes the loop:
 
 Current stable release: `3.1.6C`
 
+## Start here
+
+- [Quick start](#quick-start) · [Windows / EXE setup](README.windows.md)
+- [Configuration examples](.env.example) · [Troubleshooting](docs/observability/troubleshooting.md)
+- [3.1.6C release notes](docs/releases/3.1.6C.zh-CN.md) · [Documentation index](docs/README.md)
+
+## Everyday use in 3.1.6C
+
+- Add a local Project, then create a Thread. The business project need not be the VP installation repository.
+- Select the model and reasoning effort in the composer panel; the lightning button toggles Priority when VP recognizes support. Actual availability depends on your provider deployment.
+- Model, provider, reasoning effort and Priority are stored **per Thread in the current browser**, including across reloads. A new Thread inherits the selection at creation, then changes independently. This is not cross-device synchronization.
+- User option answers appear in the conversation for review. The model receives the original tool result; the additional visible user entry is UI-only. Command and task-update approvals remain separate interactions.
+- Answer links open a new page without replacing VP; same-page anchors stay in place.
+- Up to five main Threads run concurrently by default (`VP_MAX_CONCURRENT_RUNS`, 1–32). Each main Turn can run up to three Subagents (`VP_MAX_CONCURRENT_SUBAGENTS`, 1–8); these limits are independent.
+
+## Stop, resume and long tasks
+
+Stop interrupts the current run, including model requests, managed commands and code search. Windows cleanup targets VP-owned process trees, not every process with a matching executable name. Continuing uses saved history; it does not resurrect terminated process memory.
+
+Subagents belong to their Thread. A later run can wait for a still-active child or read saved results. Finished Futures are reconciled with persistent state; after a backend restart, old active records become `interrupted_by_restart` instead of remaining indefinitely active. Before each main-model request, VP rebuilds a compact list of Subagent IDs, tasks and states independently of conversation compaction.
+
+`search_codebase` uses rg when available and a Python fallback otherwise. Both run in a cancellable worker with a 20-second total deadline. Partial results are labeled incomplete; dependency/cache directories and oversized files are excluded by default. Narrow the search root when inspecting an excluded directory.
+
+## Repository updates
+
+While the workbench is visible, VP checks after roughly 30 seconds and then hourly. It follows the current branch's upstream in the **VP installation repository**, not the selected business Project and not a fixed GitHub URL. GitLab and custom remote names work through ordinary Git configuration.
+
+Checking fetches the tracked branch without tags and updates remote-tracking refs; it does not apply changes to the working tree. Clicking Update applies a targeted fetch, `git reset --hard <upstream-ref>`, then `git pull --ff-only`. **Tracked local edits can be lost and the local branch is reset to the upstream commit.** Commit and push your changes first. Configure an upstream explicitly; otherwise VP attempts the default remote and same-named branch.
+
+After a successful desktop update, choose Close or Restart VP now. Restart replaces the backend and refreshes the existing window when ready; it need not open a separate cold-start Preparing window.
+
 ## Stable Runtime
 
 The current branch uses a global Skill Registry with read-only Built-in Skills and Git-managed Team Skills. The runtime injects lightweight `[available_skills]` metadata plus each enabled `SKILL.md` path; the model reads full instructions with ordinary `read_file` and runs bundled scripts with ordinary `exec_command`.
@@ -40,7 +71,9 @@ VP_CONTEXT_EXACT_STALE_SEC=60
 This is the per-call output cap, not the total task limit. The 16384 default fits long-material Q&A on large-context models such as GPT-5.4; long tasks should still complete through multiple model/tool-loop steps rather than one 128K-scale response.
 `VP_MAX_USER_REQUEST_CHARS` is a safety character cap for the current user message; the actual model input is still packed by the active model context window and output reserve.
 
-Context status uses cached or quick estimates on the chat hot path instead of blocking on full tokenizer accounting every turn. `/status` opens the current Thread context details; `/compact` manually compacts old history. GPT-5.4 uses a 272K usable window, a 90% automatic compaction line, and a 95% danger line by default. Provider-reported `input_tokens` take precedence over local full-payload estimates.
+Context status uses cached or quick estimates on the chat hot path instead of blocking on full tokenizer accounting every turn. `/status` opens the current Thread context details; `/compact` manually compacts old history. VP's built-in GPT-5.4 and GPT-5.6 profiles use a 272K operational window, a 90% automatic compaction line, and a 95% danger line by default. Provider-reported `input_tokens` take precedence over local full-payload estimates.
+
+Compaction replaces only complete message/tool transactions, preserving a checkpoint and recent context. An unresolved tool call is never split. Unknown model names use a 256K fallback unless configured otherwise; a model's advertised maximum is separate from VP's operational window. This runtime uses Chat Completions, not `/responses/compact`.
 
 ## Python Commands
 
@@ -169,7 +202,9 @@ See [README.windows.md](README.windows.md) for the Windows-first setup flow.
 
 ## Minimal Configuration
 
-Copy `.env.example` to `.env`, then keep one provider profile enabled.
+On first installation, copy `.env.example` to `.env` and configure at least one provider. `VP_LLM_PROVIDER` selects the default; multiple configured providers can coexist and be selected per Thread.
+
+Configuration is loaded from the VP repository, not the business Project. `VP_DOTENV_PATH` can point to another file; restart after editing. Values for `VP_*`, `SSL_CERT_FILE` and `REQUESTS_CA_BUNDLE` in `.env` override the inherited environment; other keys fill only missing values. Use the corresponding `VP_*_API_KEY`, not an assumed fallback to generic `OPENAI_API_KEY`.
 
 ### OpenAI official
 
@@ -286,7 +321,7 @@ This keeps one code mainline while localizing user-facing UI and documentation t
 
 The formal release flow is:
 
-1. Land release-candidate work on a `cleanup/*` branch or another release branch.
+1. Land release-candidate work on a `codex/*` branch or another release branch.
 2. Keep local runtime state out of Git.
 3. Run the release gates locally.
 4. Open a PR into `main`.

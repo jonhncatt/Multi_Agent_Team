@@ -17,6 +17,37 @@
 
 現在の安定版: `3.1.6C`
 
+## はじめに
+
+- [Windows / EXE 導入](README.windows.md) · [設定例](.env.example)
+- [トラブルシューティング](docs/observability/troubleshooting.md) · [ドキュメント一覧](docs/README.md)
+- [3.1.6C リリースノート](docs/releases/3.1.6C.zh-CN.md)
+
+## 3.1.6C の日常操作
+
+- ローカルの Project を追加してから Thread を作成します。業務 Project と VP のインストール用リポジトリは別でも構いません。
+- 入力欄のパネルでモデルと推論強度を選択し、稲妻ボタンで対応モデルの Priority を切り替えます。実際に使える機能は接続先のデプロイに依存します。
+- モデル、provider、推論強度、Priority は **現在のブラウザ内で Thread ごとに保存**され、再読み込み後も復元されます。新規 Thread は作成時の設定を引き継ぎ、その後は独立します。別 PC・別ブラウザとの同期ではありません。
+- 選択肢への回答は会話にも表示されます。モデルへは元の ToolMessage として渡し、表示用の user 記録は再送しません。コマンド承認・タスク更新承認とは別の操作です。
+- 回答内の通常リンクは別ページで開き、VP の画面を置き換えません。ページ内アンカーはそのまま利用できます。
+- メイン Thread の同時実行数は既定で 5（`VP_MAX_CONCURRENT_RUNS`: 1–32）、各メイン Turn の Subagent は既定で 3（`VP_MAX_CONCURRENT_SUBAGENTS`: 1–8）です。二つの上限は独立しています。
+
+## 停止・再開・長いタスク
+
+停止は現在のモデル要求、管理対象コマンド、コード検索を中断します。Windows では VP が管理する実行の子プロセスツリーだけを終了し、同名の別アプリを一括終了しません。「続けて」は保存済み履歴からの再開であり、終了したプロセスのメモリを復元する操作ではありません。
+
+Subagent は Thread 単位で管理します。次の実行でも動作中の ID を待機でき、完了済みなら保存した結果を取得できます。Future の終了状態を照合し、バックエンド再起動後の古い活動中タスクは `interrupted_by_restart` にします。メインモデルの要求前には Subagent の ID・タスク・状態を再構築するため、圧縮で元の spawn メッセージがなくなっても参照できます。
+
+`search_codebase` は rg があれば使用し、なければ Python にフォールバックします。どちらも停止可能な独立 worker で動き、検索全体の期限は 20 秒です。途中結果は不完全と明示します。依存・キャッシュディレクトリや巨大ファイルは既定で除外し、必要な場合は検索ルートを絞ります。
+
+## リポジトリ更新
+
+画面の読み込み後約 30 秒、その後は 1 時間ごとに更新を確認します。非表示中は省略します。対象は **VP インストール用リポジトリの現在の branch / upstream** であり、業務 Project や固定の GitHub URL ではありません。GitLab や独自 remote 名にも Git の設定で対応します。
+
+確認時は tags を含めず対象 branch を fetch し、remote-tracking ref を更新するだけです。更新ボタンを押すと fetch → `git reset --hard <upstream-ref>` → `git pull --ff-only` を実行します。**追跡済みファイルの未コミット変更は失われ、ローカル branch は upstream に戻ります。** 自分の変更は先に commit・push してください。upstream 未設定時は既定 remote と同名 branch を試すため、明示的な追跡設定を推奨します。
+
+EXE では更新後に閉じるか即時再起動を選べます。再起動は既存ウィンドウで待機し、新しいバックエンドの準備後に再読み込みします。毎回別の Preparing ウィンドウが開くわけではありません。
+
 ## Stable Runtime
 
 現在の branch は、読み取り専用の Built-in Skills と Git で共同管理する Team Skills を持つグローバル Skill Registry を使用します。runtime は軽量な `[available_skills]` metadata と有効な各 `SKILL.md` のパスを渡し、モデルは通常の `read_file` で完全な説明を読み、通常の `exec_command` で同梱スクリプトを実行します。
@@ -40,7 +71,9 @@ VP_CONTEXT_EXACT_STALE_SEC=60
 これは 1 回のモデル呼び出しごとの出力上限であり、タスク全体の上限ではありません。16384 のデフォルトは GPT-5.4 のような大きな context window を持つモデルでの長文資料 Q&A に向いていますが、長いタスクは 128K 級の巨大な単発応答ではなく、複数回の model/tool loop で進めます。
 `VP_MAX_USER_REQUEST_CHARS` は現在のユーザー入力に対する安全用の文字数上限です。実際にモデルへ入る内容は、現在のモデルの context window と出力予約分に基づく token budget でさらに調整されます。
 
-Context 状態は cached/quick 見積もりを使い、チャットの通常経路を full tokenizer 計算でブロックしません。`/status` は現在の Thread の context 詳細を表示し、`/compact` は古い履歴を手動で整理します。GPT-5.4 は既定で 272K の利用可能 window、90% の自動整理ライン、95% の危険ラインを使用し、provider の実測 `input_tokens` をローカル推定より優先します。
+Context 状態は cached/quick 見積もりを使い、チャットの通常経路を full tokenizer 計算でブロックしません。`/status` は現在の Thread の context 詳細を表示し、`/compact` は古い履歴を手動で整理します。VP 内蔵の GPT-5.4 / GPT-5.6 プロファイルは既定で 272K の運用 window、90% の自動整理ライン、95% の危険ラインを使用し、provider の実測 `input_tokens` をローカル推定より優先します。
+
+圧縮は完結したメッセージ・ツール取引単位で行い、checkpoint と最近の内容を残します。未完結の tool call は分割しません。未知のモデル名は設定がなければ 256K にフォールバックします。モデル最大値と VP の運用 window は別です。現在の Runtime は Chat Completions を使い、`/responses/compact` は呼びません。
 
 ## Python Commands
 
@@ -171,7 +204,9 @@ Windows 向けの推奨手順は [README.windows.md](README.windows.md) を参�
 
 ## `.env` の最小設定
 
-`.env.example` を `.env` にコピーし、1 つの provider profile だけを有効にしてください。
+初回導入時に `.env.example` を `.env` にコピーし、少なくとも一つの provider を設定してください。`VP_LLM_PROVIDER` は既定の接続先です。複数の provider を設定して Thread ごとに選択することもできます。
+
+設定は業務 Project ではなく VP リポジトリから読み込みます。別ファイルは `VP_DOTENV_PATH` で指定し、変更後は再起動してください。`.env` の `VP_*`、`SSL_CERT_FILE`、`REQUESTS_CA_BUNDLE` は同名の環境変数を上書きし、それ以外は未設定時のみ補います。認証には対応する `VP_*_API_KEY` を使用し、一般的な `OPENAI_API_KEY` への自動フォールバックを前提にしないでください。
 
 ### OpenAI 公式
 
@@ -287,7 +322,7 @@ skills/team/<skill_name>/SKILL.md
 
 正式な release flow は次の通りです。
 
-1. `cleanup/*` などの release candidate ブランチで変更を進める。
+1. `codex/*` などの release candidate ブランチで変更を進める。
 2. ローカル runtime state を Git に含めない。
 3. ローカルで release gates を実行する。
 4. `main` への PR を作成する。
