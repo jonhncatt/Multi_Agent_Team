@@ -122,6 +122,7 @@ class SearchContentsInFileMultiArgs(BaseModel):
 
 
 class GlobFileSearchArgs(BaseModel):
+    include_ignored: bool = Field(default=False, description="Include hidden, ignored and dependency files.")
     pattern: str = Field(description="Glob pattern such as `**/*.cpp`; use a narrower pattern on large trees.")
     path: str = Field(default=".", description="Directory root under an allowed read root.")
     max_results: int = Field(default=200, ge=1, le=500, description="Maximum matching file paths.")
@@ -1642,9 +1643,9 @@ class VPRuntimeBackend:
     def _list_dir_tool(self, path: str = ".", max_entries: int = 200, offset: int = 0) -> str:
         return json.dumps(self.tools.list_dir(path=path, max_entries=max_entries, offset=offset), ensure_ascii=False)
 
-    def _glob_file_search_tool(self, pattern: str, path: str = ".", max_results: int = 200, offset: int = 0) -> str:
+    def _glob_file_search_tool(self, pattern: str, path: str = ".", max_results: int = 200, offset: int = 0, include_ignored: bool = False) -> str:
         return json.dumps(
-            self.tools.glob_file_search(pattern=pattern, path=path, max_results=max_results, offset=offset),
+            self.tools.glob_file_search(pattern=pattern, path=path, max_results=max_results, offset=offset, include_ignored=include_ignored),
             ensure_ascii=False,
         )
 

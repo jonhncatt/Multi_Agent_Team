@@ -1046,7 +1046,7 @@ def test_glob_file_search_uses_ripgrep_with_anchored_path_glob(tmp_path: Path, m
     monkeypatch.setattr("app.local_tools.shutil.which", lambda name: "/fake/rg" if name == "rg" else None)
     monkeypatch.setattr("app.local_tools.subprocess.run", fake_run)
 
-    result = executor.glob_file_search("src/*.py")
+    result = executor.glob_file_search("src/*.py", include_ignored=True)
 
     assert result["ok"] is True
     assert result["search_engine"] == "ripgrep"

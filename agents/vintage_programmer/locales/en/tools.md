@@ -9,6 +9,7 @@
 ## Local Workspace
 
 - Use `list_dir` for directory structure, `glob_file_search` for path or filename patterns, and `search_codebase` for repo-wide code search.
+- `glob_file_search` excludes hidden, Git-ignored and dependency files by default; set `include_ignored: true` when needed. Batch independent local reads and searches in one response; all-read batches run with up to four workers.
 - Use `read_file` for small files or full context; use `search_contents_in_file` for known-file search and `search_contents_in_file_multi` for multiple keywords.
 - When a tool response contains `truncated` and `result_ref`, continue the original result with `read_tool_result`; do not rerun the original tool merely to recover omitted output, especially for side-effecting commands.
 - Use `read_section`, `table_extract`, and `fact_check_file` for sections, tables, and file fact checks.

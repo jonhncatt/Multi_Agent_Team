@@ -9,6 +9,7 @@
 ## 本地工作区
 
 - 目录结构用 `list_dir`；路径或文件名模式用 `glob_file_search`；仓库级代码搜索优先 `search_codebase`。
+- `glob_file_search` 默认排除隐藏、Git 忽略及依赖目录；需要这些文件时设置 `include_ignored: true`，或将目标子目录指定为根目录。互不依赖的本地读取和搜索应在同一轮批量调用；全部为只读工具的批次最多四路并发执行。
 - 小文件或需要完整上下文时用 `read_file`；已知文件内搜索用 `search_contents_in_file`，多关键词用 `search_contents_in_file_multi`。
 - 工具结果若带有 `truncated` 和 `result_ref`，用 `read_tool_result` 按游标续读原始结果；不要为了补回被省略的输出而重复执行原工具，尤其不要重复有副作用的命令。
 - 章节、表格和文件事实核查分别用 `read_section`、`table_extract`、`fact_check_file`。

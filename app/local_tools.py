@@ -3983,11 +3983,12 @@ class LocalToolExecutor:
             {
                 "type": "function",
                 "name": "glob_file_search",
-                "description": "Find files by glob pattern relative to the workspace or a given directory root.",
+                "description": "Find project files by glob. By default skip hidden, ignored and dependency files; use include_ignored to search all files.",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "pattern": {"type": "string"},
+                        "include_ignored": {"type": "boolean", "default": False},
                         "path": {"type": "string", "default": "."},
                         "max_results": {"type": "integer", "minimum": 1, "maximum": 500, "default": 200},
                         "offset": {"type": "integer", "minimum": 0, "default": 0},
@@ -6081,6 +6082,7 @@ class LocalToolExecutor:
         path: str = ".",
         max_results: int = 200,
         offset: int = 0,
+        include_ignored: bool = False,
     ) -> dict[str, Any]:
         try:
             normalized_pattern = str(pattern or "").strip()
@@ -6094,10 +6096,26 @@ class LocalToolExecutor:
             limit = max(1, min(500, int(max_results)))
             start = max(0, int(offset or 0))
             root_payload = _path_payload(real_root, project_root=self._current_project_root(), cwd=Path(self._current_cwd_hint()))
-            all_matches = self._glob_files_with_ripgrep(real_root, normalized_pattern)
+            all_matches = self._glob_files_with_ripgrep(real_root, normalized_pattern, include_ignored=include_ignored)
             search_engine = "ripgrep"
             if all_matches is None:
                 all_matches = [candidate for candidate in sorted(real_root.glob(normalized_pattern)) if candidate.is_file()]
+                if not include_ignored:
+                    from app.code_search import SKIP_DIRS
+                    all_matches = [p for p in all_matches if not any(
+                        part.startswith(".") or part in SKIP_DIRS
+                        for part in p.relative_to(real_root).parts
+                    )]
+                    if shutil.which("git") and all_matches:
+                        ignored = subprocess.run(
+                            ["git", "check-ignore", "--stdin", "-z"], cwd=real_root,
+                            input=b"\0".join(os.fsencode(p.relative_to(real_root)) for p in all_matches) + b"\0",
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20,
+                            **self._command_process_creation_kwargs(),
+                        )
+                        if ignored.returncode in (0, 1):
+                            excluded = set(ignored.stdout.split(b"\0"))
+                            all_matches = [p for p in all_matches if os.fsencode(p.relative_to(real_root)) not in excluded]
                 search_engine = "python_fallback"
             if _is_broad_glob_pattern(normalized_pattern) and len(all_matches) > _BROAD_GLOB_GUIDANCE_THRESHOLD:
                 return {
@@ -6158,7 +6176,7 @@ class LocalToolExecutor:
         except Exception as exc:
             return {"ok": False, "error": f"glob_file_search failed: {exc}"}
 
-    def _glob_files_with_ripgrep(self, root: Path, pattern: str) -> list[Path] | None:
+    def _glob_files_with_ripgrep(self, root: Path, pattern: str, *, include_ignored: bool = False) -> list[Path] | None:
         rg = shutil.which("rg")
         if not rg:
             return None
@@ -6168,6 +6186,9 @@ class LocalToolExecutor:
         if pattern.startswith(("/", "!")) or "{" in pattern or "}" in pattern:
             return None
         rg_pattern = pattern.replace("\\", "/") if os.name == "nt" else pattern
+        from app.code_search import SKIP_DIRS
+        filters = (["-g", f"/{rg_pattern}"] if include_ignored else
+                   [arg for directory in sorted(SKIP_DIRS) for arg in ("-g", f"!**/{directory}/**")])
         try:
             completed = subprocess.run(
                 [
@@ -6175,11 +6196,9 @@ class LocalToolExecutor:
                     "--files",
                     "--threads",
                     "0",
-                    "--hidden",
-                    "--no-ignore",
+                    *(["--hidden", "--no-ignore"] if include_ignored else []),
                     "-0",
-                    "-g",
-                    f"/{rg_pattern}",
+                    *filters,
                     "--",
                     ".",
                 ],
@@ -6196,6 +6215,15 @@ class LocalToolExecutor:
         if completed.returncode not in (0, 1):
             return None
         paths = [root / os.fsdecode(raw) for raw in completed.stdout.split(b"\0") if raw]
+        if not include_ignored:
+            def matches(parts: tuple[str, ...], patterns: tuple[str, ...]) -> bool:
+                if not patterns:
+                    return not parts
+                if patterns[0] == "**":
+                    return matches(parts, patterns[1:]) or bool(parts and matches(parts[1:], patterns))
+                return bool(parts and fnmatch.fnmatch(parts[0], patterns[0]) and matches(parts[1:], patterns[1:]))
+            patterns = tuple(part for part in rg_pattern.split("/") if part and part != ".")
+            paths = [p for p in paths if matches(p.relative_to(root).parts, patterns)]
         # `rg --files` only emits file entries, so avoid a stat call for every
         # result before sorting large workspaces.
         return sorted(paths)
