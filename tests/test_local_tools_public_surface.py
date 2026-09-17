@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import shlex
+import subprocess
 
 from app.config import load_config
 from app.local_tools import LocalToolExecutor
@@ -1030,6 +1031,53 @@ def test_list_dir_lists_children_and_glob_file_search_finds_matches(tmp_path: Pa
     assert "src/main.py" in glob_result["matches"]
 
 
+def test_glob_file_search_uses_ripgrep_with_anchored_path_glob(tmp_path: Path, monkeypatch) -> None:
+    executor = LocalToolExecutor(_config(tmp_path))
+    executor.set_runtime_context(project_root=str(tmp_path), cwd=str(tmp_path))
+    (tmp_path / "src").mkdir()
+    target = tmp_path / "src" / "main.py"
+    target.write_text("print('ok')\n", encoding="utf-8")
+    calls: list[list[str]] = []
+
+    def fake_run(argv, **_kwargs):
+        calls.append(list(argv))
+        return subprocess.CompletedProcess(argv, 0, b"./src/main.py\0", b"")
+
+    monkeypatch.setattr("app.local_tools.shutil.which", lambda name: "/fake/rg" if name == "rg" else None)
+    monkeypatch.setattr("app.local_tools.subprocess.run", fake_run)
+
+    result = executor.glob_file_search("src/*.py")
+
+    assert result["ok"] is True
+    assert result["search_engine"] == "ripgrep"
+    assert result["matches"] == ["src/main.py"]
+    assert calls == [[
+        "/fake/rg",
+        "--files",
+        "--threads",
+        "0",
+        "--hidden",
+        "--no-ignore",
+        "-0",
+        "-g",
+        "/src/*.py",
+        "--",
+        ".",
+    ]]
+
+
+def test_glob_file_search_falls_back_to_pathlib_without_ripgrep(tmp_path: Path, monkeypatch) -> None:
+    executor = LocalToolExecutor(_config(tmp_path))
+    (tmp_path / "main.py").write_text("print('ok')\n", encoding="utf-8")
+    monkeypatch.setattr("app.local_tools.shutil.which", lambda _name: None)
+
+    result = executor.glob_file_search("*.py")
+
+    assert result["ok"] is True
+    assert result["search_engine"] == "python_fallback"
+    assert result["matches"] == ["main.py"]
+
+
 def test_list_dir_rejects_non_directory_and_glob_file_search_handles_no_matches(tmp_path: Path) -> None:
     executor = LocalToolExecutor(_config(tmp_path))
     file_path = tmp_path / "notes.txt"
@@ -1195,6 +1243,50 @@ def test_search_contents_scans_plain_text_beyond_old_one_megabyte_boundary(tmp_p
     assert result["source_complete"] is True
 
 
+def test_multi_search_loads_plain_text_once_and_reuses_page_index(tmp_path: Path, monkeypatch) -> None:
+    executor = LocalToolExecutor(_config(tmp_path))
+    target = tmp_path / "pages.txt"
+    target.write_text(
+        "--- Page 1 ---\nalpha evidence\n--- Page 2 ---\nbeta evidence\n",
+        encoding="utf-8",
+    )
+    calls = 0
+    original = executor._read_searchable_text
+
+    def counted_read(*, path: str, real_path: Path):
+        nonlocal calls
+        calls += 1
+        return original(path=path, real_path=real_path)
+
+    monkeypatch.setattr(executor, "_read_searchable_text", counted_read)
+
+    result = executor.search_contents_in_file_multi(str(target), ["alpha", "beta"])
+
+    assert result["ok"] is True
+    assert calls == 1
+    assert [item["page_hint"] for item in result["matches"]] == [1, 2]
+
+
+def test_multi_search_extracts_pdf_pages_once(tmp_path: Path, monkeypatch) -> None:
+    executor = LocalToolExecutor(_config(tmp_path))
+    target = tmp_path / "sample.pdf"
+    target.write_bytes(b"%PDF-1.4 fake")
+    calls = 0
+
+    def fake_pages(_path: Path):
+        nonlocal calls
+        calls += 1
+        return [(1, "alpha evidence"), (2, "beta evidence")]
+
+    monkeypatch.setattr("app.local_tools.extract_pdf_page_texts_from_path", fake_pages)
+
+    result = executor.search_contents_in_file_multi(str(target), ["alpha", "beta"])
+
+    assert result["ok"] is True
+    assert calls == 1
+    assert [item["page_hint"] for item in result["matches"]] == [1, 2]
+
+
 def test_fact_check_marks_evidence_list_compaction(tmp_path: Path) -> None:
     executor = LocalToolExecutor(_config(tmp_path))
     target = tmp_path / "facts.txt"
@@ -1213,6 +1305,40 @@ def test_fact_check_marks_evidence_list_compaction(tmp_path: Path) -> None:
     assert result["evidence_truncated"] is True
     assert result["search_complete"] is False
     assert result["has_more"] is True
+
+
+def test_fact_check_stops_after_global_evidence_budget(tmp_path: Path, monkeypatch) -> None:
+    executor = LocalToolExecutor(_config(tmp_path))
+    target = tmp_path / "facts.txt"
+    target.write_text("alpha\nbeta\ngamma\ndelta\n", encoding="utf-8")
+    calls = 0
+    original = executor._search_loaded_document
+
+    def counted_search(document, *, query: str, max_matches: int, context_chars: int):
+        nonlocal calls
+        calls += 1
+        return original(
+            document,
+            query=query,
+            max_matches=max_matches,
+            context_chars=context_chars,
+        )
+
+    monkeypatch.setattr(executor, "_search_loaded_document", counted_search)
+
+    result = executor.fact_check_file(
+        str(target),
+        "The evidence exists",
+        queries=["alpha", "beta", "gamma", "delta"],
+        max_evidence=2,
+    )
+
+    assert result["ok"] is True
+    assert calls == 3
+    assert result["evidence_count"] == 2
+    assert result["observed_evidence_count"] == 3
+    assert result["evidence_truncated"] is True
+    assert result["search_complete"] is False
 
 
 def test_read_section_can_continue_without_losing_the_remainder(tmp_path: Path) -> None:

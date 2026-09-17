@@ -21,6 +21,7 @@ from typing import Any, Callable
 SEARCH_TIMEOUT_SECONDS = 20.0
 MAX_FILE_BYTES = 16 * 1024 * 1024
 MAX_LINE_BYTES = 64 * 1024
+RG_AUTO_THREADS = "0"
 SKIP_DIRS = {".git", ".venv", "venv", "node_modules", "__pycache__", ".pytest_cache", ".mypy_cache"}
 
 
@@ -93,7 +94,7 @@ def _worker(request: dict[str, Any]) -> None:
             _emit({"match": {"resolved_path": str(path), "line": 0, "text": "[filename match]", "match_type": "path"}})
 
     if rg:
-        argv = [rg, "--json", "--threads", "2", "--max-count", str(limit), "--max-filesize", str(MAX_FILE_BYTES)]
+        argv = [rg, "--json", "--threads", RG_AUTO_THREADS, "--max-count", str(limit), "--max-filesize", str(MAX_FILE_BYTES)]
         argv += ["-s" if request["case_sensitive"] else "-i"]
         if not pattern:
             argv += ["-F"]
@@ -120,7 +121,12 @@ def _worker(request: dict[str, Any]) -> None:
                     break
         finally:
             lines.close()
-        files = _process_lines([rg, "--files", "-0", "--", "."], cwd=root, separator=b"\0")
+        files_argv = [rg, "--files", "--threads", RG_AUTO_THREADS, "-0"]
+        for directory in sorted(SKIP_DIRS):
+            files_argv += ["-g", f"!**/{directory}/**"]
+        if glob:
+            files_argv += ["-g", glob]
+        files = _process_lines([*files_argv, "--", "."], cwd=root, separator=b"\0")
         try:
             for raw in files:
                 path = root / os.fsdecode(raw)

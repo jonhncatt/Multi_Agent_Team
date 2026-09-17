@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from bisect import bisect_right
 import json
 import fnmatch
 import hashlib
@@ -813,16 +814,33 @@ def _build_search_pattern(query: str) -> re.Pattern[str] | None:
     return re.compile(body, flags=re.IGNORECASE)
 
 
-def _page_hint_for_offset(text: str, offset: int) -> int | None:
-    page = None
+def _page_marker_index(text: str) -> tuple[list[int], list[int]]:
+    offsets: list[int] = []
+    pages: list[int] = []
     for match in re.finditer(r"--- Page (\d+) ---", text):
-        if match.start() > offset:
-            break
         try:
             page = int(match.group(1))
         except Exception:
-            page = None
-    return page
+            continue
+        offsets.append(match.start())
+        pages.append(page)
+    return offsets, pages
+
+
+def _page_hint_for_offset(
+    text: str,
+    offset: int,
+    *,
+    marker_offsets: list[int] | None = None,
+    marker_pages: list[int] | None = None,
+) -> int | None:
+    offsets, pages = (
+        (marker_offsets, marker_pages)
+        if marker_offsets is not None and marker_pages is not None
+        else _page_marker_index(text)
+    )
+    index = bisect_right(offsets, offset) - 1
+    return pages[index] if index >= 0 else None
 
 
 def _spans_overlap(left: tuple[int, int], right: tuple[int, int]) -> bool:
@@ -6076,7 +6094,11 @@ class LocalToolExecutor:
             limit = max(1, min(500, int(max_results)))
             start = max(0, int(offset or 0))
             root_payload = _path_payload(real_root, project_root=self._current_project_root(), cwd=Path(self._current_cwd_hint()))
-            all_matches = [candidate for candidate in sorted(real_root.glob(normalized_pattern)) if candidate.is_file()]
+            all_matches = self._glob_files_with_ripgrep(real_root, normalized_pattern)
+            search_engine = "ripgrep"
+            if all_matches is None:
+                all_matches = [candidate for candidate in sorted(real_root.glob(normalized_pattern)) if candidate.is_file()]
+                search_engine = "python_fallback"
             if _is_broad_glob_pattern(normalized_pattern) and len(all_matches) > _BROAD_GLOB_GUIDANCE_THRESHOLD:
                 return {
                     "ok": False,
@@ -6090,6 +6112,7 @@ class LocalToolExecutor:
                     "root_ref": root_payload["root_ref"],
                     "resolved_root": str(real_root.resolve()),
                     "pattern": normalized_pattern,
+                    "search_engine": search_engine,
                     "total_matches": len(all_matches),
                     "max_results": limit,
                     "truncated": True,
@@ -6115,6 +6138,7 @@ class LocalToolExecutor:
                 "root_ref": root_payload["root_ref"],
                 "resolved_root": str(real_root.resolve()),
                 "pattern": normalized_pattern,
+                "search_engine": search_engine,
                 "count": len(matches),
                 "matches": matches,
                 "total_matches": len(all_matches),
@@ -6133,6 +6157,48 @@ class LocalToolExecutor:
             }
         except Exception as exc:
             return {"ok": False, "error": f"glob_file_search failed: {exc}"}
+
+    def _glob_files_with_ripgrep(self, root: Path, pattern: str) -> list[Path] | None:
+        rg = shutil.which("rg")
+        if not rg:
+            return None
+        # Path.glob treats these as ordinary or unsupported syntax while
+        # ripgrep's globset gives them different meanings. Preserve the Python
+        # fallback for uncommon patterns whose semantics would otherwise drift.
+        if pattern.startswith(("/", "!")) or "{" in pattern or "}" in pattern:
+            return None
+        rg_pattern = pattern.replace("\\", "/") if os.name == "nt" else pattern
+        try:
+            completed = subprocess.run(
+                [
+                    rg,
+                    "--files",
+                    "--threads",
+                    "0",
+                    "--hidden",
+                    "--no-ignore",
+                    "-0",
+                    "-g",
+                    f"/{rg_pattern}",
+                    "--",
+                    ".",
+                ],
+                cwd=root,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=20,
+                **self._command_process_creation_kwargs(),
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError("ripgrep file search timed out") from exc
+        except OSError:
+            return None
+        if completed.returncode not in (0, 1):
+            return None
+        paths = [root / os.fsdecode(raw) for raw in completed.stdout.split(b"\0") if raw]
+        # `rg --files` only emits file entries, so avoid a stat call for every
+        # result before sorting large workspaces.
+        return sorted(paths)
 
     def search_contents_in_file(
         self,
@@ -7237,6 +7303,199 @@ class LocalToolExecutor:
             "source_truncated": not source_complete,
         }
 
+    def _load_searchable_document(self, *, path: str) -> dict[str, Any]:
+        real_path = self._resolve_source_path(path)
+        if not real_path.exists():
+            return {"ok": False, "error": f"Path not found: {path}"}
+        if not real_path.is_file():
+            return {"ok": False, "error": f"Not a file: {path}"}
+
+        if _looks_like_pdf_path(real_path):
+            pages = extract_pdf_page_texts_from_path(real_path)
+            return {
+                "ok": True,
+                "kind": "pdf_pages",
+                "path": str(real_path),
+                "real_path": real_path,
+                "source_format": "pdf_text_extracted",
+                "pages": pages,
+                "source_complete": True,
+                "source_truncated": False,
+            }
+
+        base = self._read_searchable_text(path=path, real_path=real_path)
+        if not bool(base.get("ok")):
+            return base
+        text = str(base.get("content") or "")
+        marker_offsets, marker_pages = _page_marker_index(text)
+        return {
+            **base,
+            "kind": "text",
+            "real_path": real_path,
+            "content": text,
+            "page_marker_offsets": marker_offsets,
+            "page_marker_pages": marker_pages,
+        }
+
+    def _search_loaded_document(
+        self,
+        document: dict[str, Any],
+        *,
+        query: str,
+        max_matches: int,
+        context_chars: int,
+    ) -> dict[str, Any]:
+        normalized_query = _normalize_search_query(query)
+        if not normalized_query:
+            return {"ok": False, "error": "query is empty"}
+
+        variants = _expand_search_variants(normalized_query)
+        limit = max(1, min(20, int(max_matches)))
+        window = max(40, min(2000, int(context_chars)))
+        matches: list[dict[str, Any]] = []
+        collection_limit = limit + 1
+
+        if document.get("kind") == "pdf_pages":
+            pages = list(document.get("pages") or [])
+            for variant in variants:
+                pattern = _build_search_pattern(variant)
+                if pattern is None:
+                    continue
+                for page_num, body in pages:
+                    for found in pattern.finditer(body):
+                        span = found.span()
+                        start = max(0, span[0] - window)
+                        end = min(len(body), span[1] + window)
+                        matches.append(
+                            {
+                                "query_variant": variant,
+                                "matched_text": found.group(0),
+                                "start_char": span[0],
+                                "end_char": span[1],
+                                "page_hint": page_num,
+                                "context": body[start:end].strip(),
+                                "read_hint": {
+                                    "page_hint": page_num,
+                                    "start_char": max(0, span[0] - 2000),
+                                    "max_chars": 6000,
+                                },
+                            }
+                        )
+                        if len(matches) >= collection_limit:
+                            break
+                    if len(matches) >= collection_limit:
+                        break
+                if len(matches) >= collection_limit:
+                    break
+
+            matches_truncated = len(matches) > limit
+            visible_matches = matches[:limit]
+            return {
+                "ok": True,
+                "path": str(document.get("path") or ""),
+                "source_format": "pdf_text_extracted",
+                "query": normalized_query,
+                "searched_variants": variants,
+                "match_count": len(visible_matches),
+                "returned_count": len(visible_matches),
+                "total_matches": None if matches_truncated else len(visible_matches),
+                "max_matches": limit,
+                "matches": visible_matches,
+                "truncated": matches_truncated,
+                "has_more": matches_truncated,
+                "source_complete": True,
+                "source_truncated": False,
+                "search_complete": not matches_truncated,
+                "continuation": (
+                    {"strategy": "refine_query", "message": "Narrow the query or search a more specific document section."}
+                    if matches_truncated
+                    else None
+                ),
+                "note": (
+                    "Search was run page-by-page over extracted PDF text. "
+                    "If match_count=0, only conclude that the current extracted PDF text did not show a hit."
+                ),
+            }
+
+        text = str(document.get("content") or "")
+        source_complete = bool(document.get("source_complete", True))
+        marker_offsets = list(document.get("page_marker_offsets") or [])
+        marker_pages = list(document.get("page_marker_pages") or [])
+        seen_spans: list[tuple[int, int]] = []
+        for variant in variants:
+            pattern = _build_search_pattern(variant)
+            if pattern is None:
+                continue
+            for found in pattern.finditer(text):
+                span = found.span()
+                if any(_spans_overlap(span, prior) for prior in seen_spans):
+                    continue
+                seen_spans.append(span)
+
+                start = max(0, span[0] - window)
+                end = min(len(text), span[1] + window)
+                page_hint = _page_hint_for_offset(
+                    text,
+                    span[0],
+                    marker_offsets=marker_offsets,
+                    marker_pages=marker_pages,
+                )
+                matches.append(
+                    {
+                        "query_variant": variant,
+                        "matched_text": found.group(0),
+                        "start_char": span[0],
+                        "end_char": span[1],
+                        "page_hint": page_hint,
+                        "context": text[start:end].strip(),
+                        "read_hint": {
+                            "start_char": max(0, span[0] - 2000),
+                            "max_chars": 6000,
+                        },
+                    }
+                )
+                if len(matches) >= collection_limit:
+                    break
+            if len(matches) >= collection_limit:
+                break
+
+        matches_truncated = len(matches) > limit
+        visible_matches = matches[:limit]
+        truncated = bool(matches_truncated or not source_complete)
+        continuation_reasons: list[str] = []
+        if matches_truncated:
+            continuation_reasons.append("Narrow the query or search a more specific path or section.")
+        if not source_complete:
+            continuation_reasons.append("The document extractor reached its source limit; do not treat zero matches as proof of absence.")
+        return {
+            "ok": True,
+            "path": str(document.get("path") or document.get("real_path") or ""),
+            "source_format": document.get("source_format") or "text_utf8",
+            "query": normalized_query,
+            "searched_variants": variants,
+            "match_count": len(visible_matches),
+            "returned_count": len(visible_matches),
+            "total_matches": None if truncated else len(visible_matches),
+            "max_matches": limit,
+            "matches": visible_matches,
+            "searched_chars": int(document.get("searched_chars") or len(text)),
+            "total_length": int(document.get("total_length") or len(text)),
+            "truncated": truncated,
+            "has_more": truncated,
+            "source_complete": source_complete,
+            "source_truncated": not source_complete,
+            "search_complete": not truncated,
+            "continuation": (
+                {"strategy": "refine_or_convert", "message": " ".join(continuation_reasons)}
+                if continuation_reasons
+                else None
+            ),
+            "note": (
+                "Search was run over extracted document text. "
+                "If match_count=0, only conclude that the current extracted text did not show a hit."
+            ),
+        }
+
     def _search_contents_in_file_impl(
         self,
         path: str,
@@ -7245,159 +7504,15 @@ class LocalToolExecutor:
         context_chars: int = 280,
     ) -> dict[str, Any]:
         try:
-            normalized_query = _normalize_search_query(query)
-            if not normalized_query:
-                return {"ok": False, "error": "query is empty"}
-
-            variants = _expand_search_variants(normalized_query)
-            limit = max(1, min(20, int(max_matches)))
-            window = max(40, min(2000, int(context_chars)))
-            matches: list[dict[str, Any]] = []
-            collection_limit = limit + 1
-
-            real_path = self._resolve_source_path(path)
-            if not real_path.exists():
-                return {"ok": False, "error": f"Path not found: {path}"}
-            if not real_path.is_file():
-                return {"ok": False, "error": f"Not a file: {path}"}
-
-            if _looks_like_pdf_path(real_path):
-                pages = extract_pdf_page_texts_from_path(real_path)
-                for variant in variants:
-                    pattern = _build_search_pattern(variant)
-                    if pattern is None:
-                        continue
-                    for page_num, body in pages:
-                        for found in pattern.finditer(body):
-                            span = found.span()
-                            start = max(0, span[0] - window)
-                            end = min(len(body), span[1] + window)
-                            matches.append(
-                                {
-                                    "query_variant": variant,
-                                    "matched_text": found.group(0),
-                                    "start_char": span[0],
-                                    "end_char": span[1],
-                                    "page_hint": page_num,
-                                    "context": body[start:end].strip(),
-                                    "read_hint": {
-                                        "page_hint": page_num,
-                                        "start_char": max(0, span[0] - 2000),
-                                        "max_chars": 6000,
-                                    },
-                                }
-                            )
-                            if len(matches) >= collection_limit:
-                                break
-                        if len(matches) >= collection_limit:
-                            break
-                    if len(matches) >= collection_limit:
-                        break
-
-                matches_truncated = len(matches) > limit
-                visible_matches = matches[:limit]
-                return {
-                    "ok": True,
-                    "path": str(real_path),
-                    "source_format": "pdf_text_extracted",
-                    "query": normalized_query,
-                    "searched_variants": variants,
-                    "match_count": len(visible_matches),
-                    "returned_count": len(visible_matches),
-                    "total_matches": None if matches_truncated else len(visible_matches),
-                    "max_matches": limit,
-                    "matches": visible_matches,
-                    "truncated": matches_truncated,
-                    "has_more": matches_truncated,
-                    "source_complete": True,
-                    "source_truncated": False,
-                    "search_complete": not matches_truncated,
-                    "continuation": (
-                        {"strategy": "refine_query", "message": "Narrow the query or search a more specific document section."}
-                        if matches_truncated
-                        else None
-                    ),
-                    "note": (
-                        "Search was run page-by-page over extracted PDF text. "
-                        "If match_count=0, only conclude that the current extracted PDF text did not show a hit."
-                    ),
-                }
-
-            base = self._read_searchable_text(path=path, real_path=real_path)
-            if not bool(base.get("ok")):
-                return base
-
-            text = str(base.get("content") or "")
-            source_complete = bool(base.get("source_complete", True))
-            seen_spans: list[tuple[int, int]] = []
-            for variant in variants:
-                pattern = _build_search_pattern(variant)
-                if pattern is None:
-                    continue
-                for found in pattern.finditer(text):
-                    span = found.span()
-                    if any(_spans_overlap(span, prior) for prior in seen_spans):
-                        continue
-                    seen_spans.append(span)
-
-                    start = max(0, span[0] - window)
-                    end = min(len(text), span[1] + window)
-                    page_hint = _page_hint_for_offset(text, span[0])
-                    matches.append(
-                        {
-                            "query_variant": variant,
-                            "matched_text": found.group(0),
-                            "start_char": span[0],
-                            "end_char": span[1],
-                            "page_hint": page_hint,
-                            "context": text[start:end].strip(),
-                            "read_hint": {
-                                "start_char": max(0, span[0] - 2000),
-                                "max_chars": 6000,
-                            },
-                        }
-                    )
-                    if len(matches) >= collection_limit:
-                        break
-                if len(matches) >= collection_limit:
-                    break
-
-            matches_truncated = len(matches) > limit
-            visible_matches = matches[:limit]
-            truncated = bool(matches_truncated or not source_complete)
-            continuation_reasons: list[str] = []
-            if matches_truncated:
-                continuation_reasons.append("Narrow the query or search a more specific path or section.")
-            if not source_complete:
-                continuation_reasons.append("The document extractor reached its source limit; do not treat zero matches as proof of absence.")
-            return {
-                "ok": True,
-                "path": str(base.get("path") or real_path),
-                "source_format": base.get("source_format") or "text_utf8",
-                "query": normalized_query,
-                "searched_variants": variants,
-                "match_count": len(visible_matches),
-                "returned_count": len(visible_matches),
-                "total_matches": None if truncated else len(visible_matches),
-                "max_matches": limit,
-                "matches": visible_matches,
-                "searched_chars": int(base.get("searched_chars") or len(text)),
-                "total_length": int(base.get("total_length") or len(text)),
-                "truncated": truncated,
-                "has_more": truncated,
-                "source_complete": source_complete,
-                "source_truncated": not source_complete,
-                "search_complete": not truncated,
-                "continuation": (
-                    {"strategy": "refine_or_convert", "message": " ".join(continuation_reasons)}
-                    if continuation_reasons
-                    else None
-                ),
-                "note": (
-                    "Search was run over extracted document text. "
-                    "If match_count=0, only conclude that the current extracted text did not show a hit."
-                ),
-            }
+            document = self._load_searchable_document(path=path)
+            if not bool(document.get("ok")):
+                return document
+            return self._search_loaded_document(
+                document,
+                query=query,
+                max_matches=max_matches,
+                context_chars=context_chars,
+            )
         except Exception as exc:
             return {"ok": False, "error": f"search_contents_in_file failed: {exc}"}
 
@@ -7407,6 +7522,7 @@ class LocalToolExecutor:
         queries: list[str],
         per_query_max_matches: int = 3,
         context_chars: int = 280,
+        max_total_matches: int = 0,
     ) -> dict[str, Any]:
         try:
             cleaned_queries = [_normalize_search_query(item) for item in (queries or []) if str(item or "").strip()]
@@ -7419,9 +7535,14 @@ class LocalToolExecutor:
             merged: list[dict[str, Any]] = []
             seen: set[tuple[Any, ...]] = set()
             query_results: list[dict[str, Any]] = []
+            document = self._load_searchable_document(path=path)
+            if not bool(document.get("ok")):
+                return document
+            total_limit = max(0, int(max_total_matches or 0))
+            stopped_early = False
             for query in visible_queries:
-                result = self._search_contents_in_file_impl(
-                    path=path,
+                result = self._search_loaded_document(
+                    document,
                     query=query,
                     max_matches=max(1, min(10, int(per_query_max_matches))),
                     context_chars=context_chars,
@@ -7451,19 +7572,26 @@ class LocalToolExecutor:
                         continue
                     seen.add(key)
                     merged.append(match)
+                    if total_limit and len(merged) >= total_limit:
+                        stopped_early = True
+                        break
+                if stopped_early:
+                    break
 
             truncated = bool(
                 queries_truncated
+                or stopped_early
                 or any(bool(item.get("truncated")) for item in query_results)
             )
-            source_complete = all(bool(item.get("source_complete", True)) for item in query_results)
+            source_complete = bool(document.get("source_complete", True))
             return {
                 "ok": True,
                 "path": str(self._resolve_source_path(path)),
                 "queries": visible_queries,
                 "requested_query_count": requested_query_count,
-                "searched_query_count": len(visible_queries),
+                "searched_query_count": len(query_results),
                 "queries_truncated": queries_truncated,
+                "search_stopped_early": stopped_early,
                 "query_results": query_results,
                 "match_count": len(merged),
                 "returned_count": len(merged),
@@ -7476,7 +7604,11 @@ class LocalToolExecutor:
                 "continuation": (
                     {
                         "strategy": "split_queries_or_refine",
-                        "message": "Retry omitted queries separately or narrow queries whose result reports has_more=true.",
+                        "message": (
+                            "The global result limit was reached; narrow the queries or raise the evidence limit."
+                            if stopped_early
+                            else "Retry omitted queries separately or narrow queries whose result reports has_more=true."
+                        ),
                     }
                     if truncated
                     else None
@@ -7745,16 +7877,17 @@ class LocalToolExecutor:
             query_list = [_normalize_search_query(item) for item in (queries or []) if str(item or "").strip()]
             if not query_list:
                 query_list = _derive_fact_check_queries(cleaned_claim)
+            evidence_limit = max(1, min(12, int(max_evidence)))
             search = self._search_contents_in_file_multi_impl(
                 path=path,
                 queries=query_list,
                 per_query_max_matches=max(1, min(6, int(max_evidence))),
                 context_chars=220,
+                max_total_matches=evidence_limit + 1,
             )
             if not bool(search.get("ok")):
                 return search
 
-            evidence_limit = max(1, min(12, int(max_evidence)))
             all_evidence = list(search.get("matches") or [])
             evidence = all_evidence[:evidence_limit]
             evidence_truncated = len(all_evidence) > len(evidence)

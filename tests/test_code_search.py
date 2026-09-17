@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import shutil
 import subprocess
 import threading
 import time
+
+import pytest
 
 from app import code_search
 from app.local_tools import LocalToolExecutor
@@ -93,3 +96,45 @@ def test_cancelled_search_does_not_start_worker(tmp_path, monkeypatch):
         raise AssertionError("cancelled search must not start a process")
     monkeypatch.setattr(code_search.subprocess, "Popen", forbidden)
     assert tools.search_codebase("needle")["error_kind"] == "cancelled"
+
+
+def test_ripgrep_worker_uses_auto_threads_for_content_and_file_search(tmp_path, monkeypatch):
+    calls: list[list[str]] = []
+
+    def fake_process_lines(argv, *, cwd, separator=b"\n"):
+        assert cwd == tmp_path
+        _ = separator
+        calls.append(list(argv))
+        if False:
+            yield b""
+
+    monkeypatch.setattr(code_search, "_process_lines", fake_process_lines)
+
+    code_search._worker(
+        {
+            "root": str(tmp_path),
+            "query": "needle",
+            "limit": 20,
+            "file_glob": "**/*.py",
+            "use_regex": False,
+            "case_sensitive": False,
+            "rg": "/fake/rg",
+        }
+    )
+
+    assert len(calls) == 2
+    assert all(call[call.index("--threads") + 1] == "0" for call in calls)
+    assert ["-g", "**/*.py"] == calls[1][calls[1].index("**/*.py") - 1 : calls[1].index("**/*.py") + 1]
+
+
+@pytest.mark.skipif(shutil.which("rg") is None, reason="ripgrep is not installed")
+def test_ripgrep_search_uses_json_fast_path_and_auto_threads(tmp_path, monkeypatch):
+    tools = _search(tmp_path, monkeypatch, rg=True)
+    (tmp_path / "source.py").write_text("needle\n", encoding="utf-8")
+
+    result = tools.search_codebase("needle")
+
+    assert code_search.RG_AUTO_THREADS == "0"
+    assert result["ok"] is True
+    assert result["parser_mode"] == "json"
+    assert result["matches"][0]["path"] == "source.py"
