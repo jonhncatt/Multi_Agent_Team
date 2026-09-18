@@ -11,6 +11,7 @@ allowed_tools = [
   "search_contents_in_file_multi",
   "read_section",
   "search_codebase",
+  "search_files",
 ]
 
 developer_instructions = """

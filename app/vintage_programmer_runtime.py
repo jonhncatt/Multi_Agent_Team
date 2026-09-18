@@ -102,6 +102,7 @@ _READ_ONLY_TOOL_NAMES = {
     "table_extract",
     "fact_check_file",
     "search_codebase",
+    "search_files",
     "web_search",
     "web_fetch",
     "image_read",
@@ -1686,7 +1687,7 @@ class VintageProgrammerRuntime:
 
     def _parallel_read_results(self, calls, *, runnable_tools, locale, runtime_boundary, attachments, on_started=None):
         """Execute an all-read batch after validation; preserve task-local capabilities."""
-        safe = {"read_file", "list_dir", "glob_file_search", "search_codebase",
+        safe = {"read_file", "list_dir", "glob_file_search", "search_codebase", "search_files",
                 "search_contents_in_file", "search_contents_in_file_multi"}
         if len(calls) < 2 or any(normalize_tool_name(str(c.get("name") or "")) not in safe for c in calls):
             return {}
@@ -2520,7 +2521,7 @@ class VintageProgrammerRuntime:
         payload = dict(result or {}) if isinstance(result, dict) else {}
         if tool_name in {"read_file", "read_section"}:
             return str(arguments.get("path") or payload.get("path") or "").strip()
-        if tool_name in {"search_contents_in_file", "search_contents_in_file_multi", "search_codebase"}:
+        if tool_name in {"search_contents_in_file", "search_contents_in_file_multi", "search_codebase", "search_files"}:
             query = arguments.get("query")
             if query in ("", None):
                 queries = list(arguments.get("queries") or [])
@@ -2695,7 +2696,7 @@ class VintageProgrammerRuntime:
                 detail=str(arguments.get("pattern") or ""),
             )
 
-        if name in {"search_contents_in_file", "search_contents_in_file_multi", "search_codebase", "web_search"}:
+        if name in {"search_contents_in_file", "search_contents_in_file_multi", "search_codebase", "search_files", "web_search"}:
             hits = cls._tool_result_items(payload, "matches", "results")
             seen = tracker.setdefault("search_hits", set())
             new_hits = 0

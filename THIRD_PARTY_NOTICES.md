@@ -37,9 +37,16 @@ The Python dependency list below covers direct dependencies declared in `require
 | `rapidocr-onnxruntime` | 1.4.4 | Apache-2.0 | runtime |
 | `onnxruntime` | 1.26.0 | MIT | runtime |
 | `playwright` | 1.60.0 | Apache-2.0 | runtime |
+| `pathspec` | 0.12.1 | MPL-2.0 | runtime, filesystem ignore-pattern parsing only; unmodified dependency, no vendored source |
 | `pytest` | 9.0.3 | MIT | development/test |
 
 ## Copyleft Python Dependencies
+
+`pathspec` 0.12.1 is an unmodified MPL-2.0 dependency used only for ignore patterns.
+Retain its packaged license and source availability information when redistributing
+it (upstream: https://github.com/cpburnz/python-pathspec).
+The filename fuzzy matcher in `app/filename_search.py` is repository-owned code;
+no Nucleo dependency or Nucleo source is included.
 
 These packages were identified in the dependency closure and should be reviewed before distributing a bundled application or installer.
 

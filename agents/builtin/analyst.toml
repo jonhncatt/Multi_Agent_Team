@@ -11,6 +11,7 @@ allowed_tools = [
   "table_extract",
   "fact_check_file",
   "search_codebase",
+  "search_files",
   "image_inspect",
   "image_read",
 ]

@@ -8,7 +8,7 @@
 
 ## ローカルワークスペース
 
-- ディレクトリ構造は `list_dir`、パス名やファイル名パターンは `glob_file_search`、リポジトリ全体のコード検索は `search_codebase` を優先する。
+- ディレクトリ構造は `list_dir`、あいまいなファイル名やパス（`vprb`、`runtime backend` など）は `search_files`、正確な glob パターンは `glob_file_search`、ファイル内容のみの検索は `search_codebase` を使う。ファイル名検索はスナップショットを再利用するため、ファイルや ignore 規則の変更後は `refresh: true` を指定する。`walk_complete` が false なら再試行し、不完全な結果から不存在を断定しない。検索対象は指定した root のみ。別のルートは明示的に指定する。
 - `glob_file_search` は既定で隠しファイル、Git の無視対象、依存ディレクトリを除外する。必要な場合は `include_ignored: true` を指定する。独立したローカルの読み取りと検索は同じ応答でまとめて呼び出す。読み取り専用のバッチは最大4並列で実行される。
 - 小さいファイルや全体コンテキストは `read_file`、既知ファイル内検索は `search_contents_in_file`、複数キーワードは `search_contents_in_file_multi`。
 - ツール結果に `truncated` と `result_ref` がある場合は `read_tool_result` で元の結果を続けて読み、省略出力を得るためだけに元のツール、特に副作用のあるコマンドを再実行しない。

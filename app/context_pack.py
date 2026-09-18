@@ -385,6 +385,7 @@ _FILE_CONTEXT_TOOL_NAMES = {
     "table_extract",
     "fact_check_file",
     "search_codebase",
+    "search_files",
     "image_inspect",
     "image_read",
     "apply_patch",

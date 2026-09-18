@@ -1,4 +1,4 @@
-"""Bounded code search in an owned process, including the no-ripgrep fallback.
+"""Bounded content search: direct rg, or an isolated no-ripgrep Python worker.
 
 The worker uses only the standard library so starting a search does not import
 the Agent runtime. The parent can stop even a blocked file read or regex.
@@ -14,6 +14,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from typing import Any, Callable
@@ -38,7 +39,6 @@ def _emit(payload: dict[str, Any]) -> None:
 def _process_lines(argv: list[str], *, cwd: Path, separator: bytes = b"\n"):
     # stderr goes to disk to avoid pipe deadlock without buffering unbounded
     # diagnostics in memory. All children inherit the worker's process group.
-    import tempfile
     with tempfile.TemporaryFile() as errors:
         proc = subprocess.Popen(argv, cwd=cwd, stdout=subprocess.PIPE, stderr=errors, **_child_creation_kwargs())
         try:
@@ -70,9 +70,7 @@ def _worker(request: dict[str, Any]) -> None:
     flags = 0 if request["case_sensitive"] else re.IGNORECASE
     pattern = re.compile(query, flags) if request["use_regex"] else None
     needle = query if request["case_sensitive"] else query.lower()
-    stem_needle = needle.rsplit(".", 1)[0] if "." in needle else needle
     contents = 0
-    paths = 0
     skipped = 0
 
     def selected(path: Path) -> bool:
@@ -81,29 +79,8 @@ def _worker(request: dict[str, Any]) -> None:
                 and (not glob or fnmatch.fnmatch(relative, glob)
                      or (glob.startswith("**/") and fnmatch.fnmatch(relative, glob[3:]))))
 
-    def path_match(path: Path) -> None:
-        nonlocal paths
-        if paths >= limit:
-            return
-        relative = path.relative_to(root).as_posix()
-        hay = relative if request["case_sensitive"] else relative.lower()
-        stem = path.stem if request["case_sensitive"] else path.stem.lower()
-        matched = bool(pattern.search(relative)) if pattern else (needle in hay or needle in stem or bool(stem_needle and stem_needle in stem))
-        if matched:
-            paths += 1
-            _emit({"match": {"resolved_path": str(path), "line": 0, "text": "[filename match]", "match_type": "path"}})
-
     if rg:
-        argv = [rg, "--json", "--threads", RG_AUTO_THREADS, "--max-count", str(limit), "--max-filesize", str(MAX_FILE_BYTES)]
-        argv += ["-s" if request["case_sensitive"] else "-i"]
-        if not pattern:
-            argv += ["-F"]
-        for directory in sorted(SKIP_DIRS):
-            argv += ["-g", f"!**/{directory}/**"]
-        if glob:
-            argv += ["-g", glob]
-        # -e prevents a query beginning with '-' from becoming an option.
-        lines = _process_lines([*argv, "-e", query, "--", "."], cwd=root)
+        lines = _process_lines(_rg_argv(request), cwd=root)
         try:
             for raw in lines:
                 event = json.loads(raw)
@@ -121,24 +98,9 @@ def _worker(request: dict[str, Any]) -> None:
                     break
         finally:
             lines.close()
-        files_argv = [rg, "--files", "--threads", RG_AUTO_THREADS, "-0"]
-        for directory in sorted(SKIP_DIRS):
-            files_argv += ["-g", f"!**/{directory}/**"]
-        if glob:
-            files_argv += ["-g", glob]
-        files = _process_lines([*files_argv, "--", "."], cwd=root, separator=b"\0")
-        try:
-            for raw in files:
-                path = root / os.fsdecode(raw)
-                if selected(path):
-                    path_match(path)
-                if paths >= limit:
-                    break
-        finally:
-            files.close()
         # rg silently omits files over --max-filesize; never claim exhaustive
         # coverage of all bytes when a size cap is in effect.
-        _emit({"done": True, "limited": contents >= limit or paths >= limit,
+        _emit({"done": True, "limited": contents >= limit,
                "skipped_files": skipped, "size_limit_applied": True})
         return
 
@@ -161,11 +123,8 @@ def _worker(request: dict[str, Any]) -> None:
     for path in candidates():
         if not selected(path) or path.is_symlink():
             continue
-        path_match(path)
         if contents >= limit:
-            if paths >= limit:
-                break
-            continue
+            break
         try:
             if path.stat().st_size > MAX_FILE_BYTES:
                 skipped += 1
@@ -189,7 +148,20 @@ def _worker(request: dict[str, Any]) -> None:
                             break
         except OSError:
             skipped += 1
-    _emit({"done": True, "limited": contents >= limit or paths >= limit, "skipped_files": skipped})
+    _emit({"done": True, "limited": contents >= limit, "skipped_files": skipped})
+
+
+def _rg_argv(request: dict[str, Any]) -> list[str]:
+    argv = [request["rg"], "--no-config", "--json", "--threads", RG_AUTO_THREADS,
+            "--max-count", str(request["limit"] + 1), "--max-filesize", str(MAX_FILE_BYTES),
+            "-s" if request["case_sensitive"] else "-i"]
+    if not request["use_regex"]:
+        argv.append("-F")
+    for directory in sorted(SKIP_DIRS):
+        argv += ["-g", f"!**/{directory}/**"]
+    if request["file_glob"]:
+        argv += ["-g", request["file_glob"]]
+    return [*argv, "-e", request["query"], "--", "."]
 
 
 def run_search(request: dict[str, Any], *, cancelled: Callable[[], bool],
@@ -199,9 +171,17 @@ def run_search(request: dict[str, Any], *, cancelled: Callable[[], bool],
         return {"matches": [], "stop_reason": "cancelled"}
     events: queue.Queue[Any] = queue.Queue(maxsize=256)
     reader_stop = threading.Event()
-    proc = subprocess.Popen([sys.executable, "-u", str(Path(__file__).resolve())],
-                            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                            **creation_kwargs)
+    direct = bool(request.get("rg"))
+    errors = tempfile.TemporaryFile()
+    try:
+        proc = subprocess.Popen(
+            _rg_argv(request) if direct else [sys.executable, "-u", str(Path(__file__).resolve())],
+            cwd=request["root"] if direct else None,
+            stdin=subprocess.DEVNULL if direct else subprocess.PIPE,
+            stdout=subprocess.PIPE, stderr=errors, **creation_kwargs)
+    except BaseException:
+        errors.close()
+        raise
     def publish(event: Any) -> None:
         while not reader_stop.is_set():
             try:
@@ -215,13 +195,16 @@ def run_search(request: dict[str, Any], *, cancelled: Callable[[], bool],
                 if reader_stop.is_set():
                     break
                 publish(json.loads(line))
+        except (ValueError, OSError) as exc:
+            publish({"error": str(exc)})
         finally:
             publish(None)
     reader = threading.Thread(target=read, name="vp-code-search-output", daemon=True)
     result: dict[str, Any] = {"matches": [], "stop_reason": "worker_failed"}
     try:
-        proc.stdin.write(json.dumps(request).encode("utf-8"))
-        proc.stdin.close()
+        if not direct:
+            proc.stdin.write(json.dumps(request).encode("utf-8"))
+            proc.stdin.close()
         reader.start()
         while True:
             if cancelled():
@@ -235,8 +218,35 @@ def run_search(request: dict[str, Any], *, cancelled: Callable[[], bool],
             except queue.Empty:
                 continue
             if event is None:
+                if direct:
+                    code = proc.poll()
+                    if code is None:
+                        # EOF can precede process exit. Stay in the cancellation
+                        # loop instead of blocking the parent on wait().
+                        try:
+                            code = proc.wait(timeout=0.05)
+                        except subprocess.TimeoutExpired:
+                            events.put(None)
+                            continue
+                    if code in (0, 1):
+                        result["stop_reason"] = ""
+                    else:
+                        errors.seek(0)
+                        result["error"] = errors.read(4096).decode("utf-8", "replace")
                 break
-            if "match" in event:
+            if direct and event.get("type") == "match":
+                data = event["data"]
+                name = data.get("path", {}).get("text")
+                text = data.get("lines", {}).get("text")
+                if name is None or text is None:
+                    result["skipped_files"] = result.get("skipped_files", 0) + 1
+                    continue
+                result["matches"].append({"resolved_path": str(Path(request["root"]) / name),
+                                          "line": data["line_number"], "text": text.strip()[:MAX_LINE_BYTES]})
+                if len(result["matches"]) > request["limit"]:
+                    result["stop_reason"] = "limit"
+                    break
+            elif "match" in event:
                 result["matches"].append(event["match"])
             elif event.get("done"):
                 result.update(event)
@@ -256,8 +266,11 @@ def run_search(request: dict[str, Any], *, cancelled: Callable[[], bool],
         if reader.ident is not None:
             reader.join(timeout=1)
         proc.stdout.close()
-        if not proc.stdin.closed:
+        if proc.stdin is not None and not proc.stdin.closed:
             proc.stdin.close()
+        errors.close()
+    if direct:
+        result["size_limit_applied"] = True
     result["duration_ms"] = int((time.monotonic() - started) * 1000)
     return result
 

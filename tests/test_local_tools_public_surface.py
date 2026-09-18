@@ -1226,8 +1226,8 @@ def test_search_codebase_declares_when_more_than_one_hundred_matches_exist(tmp_p
     assert result["has_more"] is True
     assert result["search_complete"] is False
     assert result["total_matches"] is None
-    assert result["matches"][0]["path"] == "needle_token_target.cpp"
-    assert result["matches"][0]["match_type"] == "path"
+    assert all(item["path"] != "needle_token_target.cpp" for item in result["matches"])
+    assert all(item["line"] > 0 for item in result["matches"])
 
 
 def test_search_contents_scans_plain_text_beyond_old_one_megabyte_boundary(tmp_path: Path) -> None:

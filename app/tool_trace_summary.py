@@ -128,7 +128,7 @@ def summarize_tool_args(tool_name: str, args: dict[str, Any]) -> str:
         pattern = arguments.get("pattern") or ""
         path = arguments.get("path") or "."
         return f"pattern={mask_sensitive_text(str(pattern))[:120]} · path={path}"
-    if normalized in {"search_contents_in_file", "search_codebase"}:
+    if normalized in {"search_contents_in_file", "search_codebase", "search_files"}:
         query = arguments.get("query") or arguments.get("pattern") or ""
         path = arguments.get("path") or ""
         return f"query={mask_sensitive_text(str(query))[:120]}{f' · path={path}' if path else ''}"
@@ -192,7 +192,7 @@ def summarize_tool_result(tool_name: str, result: Any, *, locale: str = "en") ->
         return translate(locale, "runtime.tool.summary.listed_entries", count=_result_count(payload, "entries", "entry_count", "count"))
     if normalized == "glob_file_search":
         return translate(locale, "runtime.tool.summary.file_matches", count=_result_count(payload, "matches", "count", "total_matches"))
-    if normalized == "search_codebase":
+    if normalized in {"search_codebase", "search_files"}:
         return translate(locale, "runtime.tool.summary.search_results", count=_result_count(payload, "matches", "results", "count"))
     if normalized in {"search_contents_in_file", "search_contents_in_file_multi"}:
         return translate(locale, "runtime.tool.summary.search_matches", count=_result_count(payload, "matches", "results", "count"))

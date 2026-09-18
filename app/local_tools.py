@@ -1179,6 +1179,9 @@ def _parse_workspace_patch(patch_text: str) -> list[dict[str, Any]]:
 
 class LocalToolExecutor:
     def __init__(self, config: AppConfig) -> None:
+        from app.filename_search import FilenameSearch
+
+        self._filename_search = FilenameSearch()
         self.config = config
         self._runtime_ctx = threading.local()
         self._web_cache_lock = threading.Lock()
@@ -4094,8 +4097,24 @@ class LocalToolExecutor:
             },
             {
                 "type": "function",
+                "name": "search_files",
+                "description": "Fuzzy filename/path lookup (e.g. vprb or runtime backend), not content search. Reuses a progressive snapshot; use refresh after filesystem changes. Incomplete walks are not evidence of absence.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "minLength": 1, "maxLength": 256},
+                        "root": {"type": "string", "default": "."},
+                        "max_results": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20},
+                        "refresh": {"type": "boolean", "default": False},
+                    },
+                    "required": ["query"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "type": "function",
                 "name": "search_codebase",
-                "description": "Search code or text files under a local root and return structured file, line, and text matches.",
+                "description": "Search file contents only under a local root and return structured line matches. Use search_files for fuzzy filenames or glob_file_search for exact path patterns.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -4702,6 +4721,9 @@ class LocalToolExecutor:
             return self._decorate_result(result)
         if name == "search_codebase":
             result = self.search_codebase(**arguments)
+            return self._decorate_result(result)
+        if name == "search_files":
+            result = self.search_files(**arguments)
             return self._decorate_result(result)
         if name == "web_search":
             result = self.web_search(**arguments)
@@ -7955,6 +7977,33 @@ class LocalToolExecutor:
         except Exception as exc:
             return {"ok": False, "error": f"fact_check_file failed: {exc}"}
 
+    def search_files(self, query: str, root: str = ".", max_results: int = 20,
+                     refresh: bool = False) -> dict[str, Any]:
+        try:
+            query = str(query or "").strip()
+            if not query or len(query) > 256:
+                return {"ok": False, "error_kind": "invalid_arguments", "error": "query must contain 1 to 256 characters"}
+            real_root = self._resolve_path(root)
+            if not real_root.is_dir():
+                return {"ok": False, "error_kind": "not_a_directory", "error": f"Not a directory: {root}"}
+            result = self._filename_search.search(
+                real_root, query, max(1, min(100, int(max_results))),
+                refresh=bool(refresh), cancelled=self._current_cancel_requested,
+            )
+            for item in result["matches"]:
+                # Revalidate cached paths against today's permission boundary.
+                path = self._resolve_path(str(real_root / item["path"]))
+                item["resolved_path"] = str(path)
+                item["path"] = _display_model_path(path, project_root=self._current_project_root(), cwd=real_root)
+            root_payload = _path_payload(real_root, project_root=self._current_project_root(), cwd=Path(self._current_cwd_hint()))
+            result.update(root=root_payload["path"], root_ref=root_payload["root_ref"], resolved_root=str(real_root))
+            result["search_scope"] = {"hidden_files": False, "symlinks": False,
+                                      "ignore_files": [".gitignore", ".ignore", ".rgignore"],
+                                      "note": "Snapshot of this root; refresh=true after filesystem/ignore changes. Git global excludes are not loaded."}
+            return result
+        except Exception as exc:
+            return {"ok": False, "error": f"search_files failed: {exc}"}
+
     def search_codebase(
         self, query: str, root: str = ".", max_matches: int = 20,
         file_glob: str = "", use_regex: bool = False, case_sensitive: bool = False,
@@ -7981,25 +8030,12 @@ class LocalToolExecutor:
                 terminate=self._terminate_command_process_tree,
             )
             matches = payload["matches"]
-            content_paths = {item["resolved_path"]: item for item in matches if item.get("match_type") != "path"}
-            combined = []
-            for item in matches:
-                if item.get("match_type") != "path":
-                    continue
-                content = content_paths.get(item["resolved_path"])
-                if content is not None:
-                    content["match_type"] = "path_and_content"
-                else:
-                    combined.append(item)
-            combined = [*combined,
-                        *(item for item in matches if item.get("match_type") == "path_and_content"),
-                        *(item for item in matches if not item.get("match_type"))]
-            visible = combined[:limit]
+            visible = matches[:limit]
             for item in visible:
                 path = Path(item["resolved_path"])
                 item["path"] = _display_model_path(path, project_root=self._current_project_root(), cwd=real_root)
             reason = payload.get("stop_reason", "")
-            incomplete = bool(reason or payload.get("skipped_files") or len(combined) > limit)
+            incomplete = bool(reason or payload.get("skipped_files") or len(matches) > limit)
             root_payload = _path_payload(real_root, project_root=self._current_project_root(), cwd=Path(self._current_cwd_hint()))
             result = {
                 "ok": reason not in {"cancelled", "worker_failed"},
@@ -8008,11 +8044,10 @@ class LocalToolExecutor:
                 "match_count": len(visible), "returned_count": len(visible),
                 "total_matches": None if incomplete else len(visible),
                 "max_matches": limit, "matches": visible,
-                "path_match_count": sum(bool(item.get("match_type")) for item in combined),
-                "content_match_count": sum(item.get("match_type") != "path" for item in combined),
-                "returned_path_match_count": sum(bool(item.get("match_type")) for item in visible),
-                "returned_content_match_count": sum(item.get("match_type") != "path" for item in visible),
+                "content_match_count": len(matches),
+                "returned_content_match_count": len(visible),
                 "parser_mode": "json" if rg else "python_fallback",
+                "execution_mode": "direct_rg" if rg else "isolated_python",
                 "duration_ms": payload.get("duration_ms", 0),
                 "stop_reason": reason, "skipped_files": payload.get("skipped_files", 0),
                 "search_scope": {"excluded_directories": sorted(SKIP_DIRS), "max_file_bytes": MAX_FILE_BYTES,

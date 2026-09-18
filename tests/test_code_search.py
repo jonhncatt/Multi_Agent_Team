@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import shutil
+import json
 import subprocess
+import sys
 import threading
 import time
 
@@ -98,7 +100,7 @@ def test_cancelled_search_does_not_start_worker(tmp_path, monkeypatch):
     assert tools.search_codebase("needle")["error_kind"] == "cancelled"
 
 
-def test_ripgrep_worker_uses_auto_threads_for_content_and_file_search(tmp_path, monkeypatch):
+def test_ripgrep_worker_uses_one_content_scan_with_auto_threads(tmp_path, monkeypatch):
     calls: list[list[str]] = []
 
     def fake_process_lines(argv, *, cwd, separator=b"\n"):
@@ -122,9 +124,10 @@ def test_ripgrep_worker_uses_auto_threads_for_content_and_file_search(tmp_path, 
         }
     )
 
-    assert len(calls) == 2
+    assert len(calls) == 1
     assert all(call[call.index("--threads") + 1] == "0" for call in calls)
-    assert ["-g", "**/*.py"] == calls[1][calls[1].index("**/*.py") - 1 : calls[1].index("**/*.py") + 1]
+    assert "--files" not in calls[0]
+    assert ["-g", "**/*.py"] == calls[0][calls[0].index("**/*.py") - 1 : calls[0].index("**/*.py") + 1]
 
 
 @pytest.mark.skipif(shutil.which("rg") is None, reason="ripgrep is not installed")
@@ -138,3 +141,75 @@ def test_ripgrep_search_uses_json_fast_path_and_auto_threads(tmp_path, monkeypat
     assert result["ok"] is True
     assert result["parser_mode"] == "json"
     assert result["matches"][0]["path"] == "source.py"
+
+
+@pytest.mark.parametrize("rg", [False, True])
+def test_content_search_never_returns_filename_only_matches(tmp_path, monkeypatch, rg):
+    if rg and not shutil.which("rg"):
+        pytest.skip("ripgrep not installed")
+    tools = _search(tmp_path, monkeypatch, rg=rg)
+    (tmp_path / "needle.py").write_text("unrelated text\n")
+    assert tools.search_codebase("needle")["matches"] == []
+
+
+@pytest.mark.skipif(shutil.which("rg") is None, reason="ripgrep not installed")
+def test_direct_rg_starts_only_one_process_and_reports_invalid_regex(tmp_path, monkeypatch):
+    tools = _search(tmp_path, monkeypatch, rg=True)
+    original = subprocess.Popen
+    calls = []
+    def tracked(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return original(argv, **kwargs)
+    monkeypatch.setattr(code_search.subprocess, "Popen", tracked)
+    result = tools.search_codebase("[", use_regex=True)
+    assert result["error_kind"] == "search_failed"
+    assert not result["search_complete"]
+    assert len(calls) == 1
+    assert calls[0][0][0] == shutil.which("rg")
+    assert "--files" not in calls[0][0]
+    assert calls[0][1].items() >= tools._command_process_creation_kwargs().items()
+
+
+@pytest.mark.parametrize("stop", ["cancelled", "timeout"])
+def test_direct_rg_owned_process_is_killed_on_stop(tmp_path, monkeypatch, stop):
+    tools = _search(tmp_path, monkeypatch, rg=True)
+    monkeypatch.setattr("app.local_tools.shutil.which", lambda _: "/fake/rg")
+    original = subprocess.Popen
+    children = []
+    event = {"type": "match", "data": {"path": {"text": "source.py"}, "lines": {"text": "needle\n"}, "line_number": 1}}
+    def fake_rg(argv, **kwargs):
+        assert argv[0] == "/fake/rg"
+        child = original([sys.executable, "-u", "-c", f"import time; print({json.dumps(event)!r}, flush=True); time.sleep(30)"], **kwargs)
+        children.append(child)
+        return child
+    monkeypatch.setattr(code_search.subprocess, "Popen", fake_rg)
+    cancelled = threading.Event()
+    tools.set_runtime_context(project_root=str(tmp_path), cancel_event=cancelled)
+    timer = threading.Timer(0.3, cancelled.set)
+    if stop == "cancelled":
+        timer.start()
+    else:
+        monkeypatch.setattr(code_search, "SEARCH_TIMEOUT_SECONDS", 0.3)
+    try:
+        start = time.monotonic()
+        result = tools.search_codebase("needle")
+    finally:
+        timer.cancel()
+    assert time.monotonic() - start < 3
+    assert result["stop_reason"] == stop
+    assert result["matches"][0]["text"] == "needle"
+    assert result["search_complete"] is False
+    assert children and children[0].poll() is not None
+
+
+def test_backend_does_not_implicitly_search_other_roots():
+    from types import SimpleNamespace
+    from app.vp_runtime_backend import VPRuntimeBackend
+    backend = object.__new__(VPRuntimeBackend)
+    calls = []
+    def no_matches(**kwargs):
+        calls.append(kwargs)
+        return {"ok": True, "matches": [], "match_count": 0}
+    backend.tools = SimpleNamespace(search_codebase=no_matches)
+    assert json.loads(backend._search_codebase_tool("missing"))["matches"] == []
+    assert len(calls) == 1 and calls[0]["root"] == "."

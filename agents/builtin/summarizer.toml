@@ -10,6 +10,7 @@ allowed_tools = [
   "read_section",
   "table_extract",
   "search_codebase",
+  "search_files",
   "image_read",
 ]
 

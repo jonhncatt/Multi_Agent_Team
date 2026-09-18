@@ -175,6 +175,7 @@ def _target_fingerprint(
             }
     elif name in {
         "search_codebase",
+        "search_files",
         "search_contents_in_file",
         "search_contents_in_file_multi",
         "glob_file_search",
