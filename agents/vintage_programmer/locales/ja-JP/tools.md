@@ -8,8 +8,9 @@
 
 ## ローカルワークスペース
 
-- ディレクトリ構造は `list_dir`、あいまいなファイル名やパス（`vprb`、`runtime backend` など）は `search_files`、正確な glob パターンは `glob_file_search`、ファイル内容のみの検索は `search_codebase` を使う。ファイル名検索はスナップショットを再利用するため、ファイルや ignore 規則の変更後は `refresh: true` を指定する。`walk_complete` が false なら再試行し、不完全な結果から不存在を断定しない。検索対象は指定した root のみ。別のルートは明示的に指定する。
+- ディレクトリ構造は `list_dir`、あいまいなファイル名やパス（`vprb`、`runtime backend` など）は `search_files`、正確な glob パターンは `glob_file_search`、ファイル内容のみの検索は `search_codebase` を使う。ファイル名検索はスナップショットを再利用するため、外部でファイルや ignore 規則を変更した後は `refresh: true` を指定する。`walk_complete` が false なら再試行し、不完全な結果から不存在を断定しない。検索対象は指定した root のみ。別のルートは明示的に指定する。
 - `glob_file_search` は既定で隠しファイル、Git の無視対象、依存ディレクトリを除外する。必要な場合は `include_ignored: true` を指定する。独立したローカルの読み取りと検索は同じ応答でまとめて呼び出す。読み取り専用のバッチは最大4並列で実行される。
+- VP 自身のファイル変更でキャッシュは自動失効し、次の検索で再構築される。外部変更には手動 `refresh` が必要。内容検索では VP の実行時生成データを既定で除外し、調査する場合はその子ディレクトリを明示する。rg のサイズ上限が有効な場合、完全性は保守的に不明（`size_limit`）とし、不存在の証拠にしない。
 - 小さいファイルや全体コンテキストは `read_file`、既知ファイル内検索は `search_contents_in_file`、複数キーワードは `search_contents_in_file_multi`。
 - ツール結果に `truncated` と `result_ref` がある場合は `read_tool_result` で元の結果を続けて読み、省略出力を得るためだけに元のツール、特に副作用のあるコマンドを再実行しない。
 - セクション、表、ファイル内の根拠確認は `read_section`、`table_extract`、`fact_check_file` を使う。

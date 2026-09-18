@@ -10,6 +10,7 @@ import argparse
 import ast
 import importlib.util
 import io
+import inspect
 import json
 from pathlib import Path
 import platform
@@ -24,6 +25,20 @@ from unittest.mock import patch
 
 from app import code_search, local_tools
 from app.config import load_config
+
+
+def utf8_output(argv, **kwargs):
+    # Git source must decode strictly, independent of a cp932 Windows locale.
+    return subprocess.check_output(argv, text=True, encoding="utf-8", errors="strict", **kwargs)
+
+
+def extract_repository_archive(tar, root):
+    if "filter" in inspect.signature(tar.extractall).parameters:
+        tar.extractall(root, filter="data")
+    else:
+        # Only used for git archive of a trusted ref in this local repository,
+        # never a downloaded/user-supplied tar. Python 3.11.2 lacks filters.
+        tar.extractall(root)
 
 
 def measure(call, count=20):
@@ -42,12 +57,13 @@ def measure(call, count=20):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--baseline-ref", default="df95e26d")
+    parser.add_argument("--compare-ref", help="Compare that revision's public search directly with current code (omit the intermediate worker).")
     args = parser.parse_args()
     if not shutil.which("rg"):
         parser.error("This three-way benchmark needs rg (the application does not).")
     repository = Path(__file__).resolve().parents[1]
-    ref = subprocess.check_output(["git", "rev-parse", args.baseline_ref], cwd=repository, text=True).strip()
-    source = subprocess.check_output(["git", "show", f"{ref}:app/local_tools.py"], cwd=repository, text=True)
+    ref = utf8_output(["git", "rev-parse", args.compare_ref or args.baseline_ref], cwd=repository).strip()
+    source = utf8_output(["git", "show", f"{ref}:app/local_tools.py"], cwd=repository)
     tree = ast.parse(source)
     cls = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "LocalToolExecutor")
     method = next(node for node in cls.body if isinstance(node, ast.FunctionDef) and node.name == "search_codebase")
@@ -55,18 +71,19 @@ def main():
     exec(compile(ast.Module(body=[method], type_ignores=[]), "baseline_search_codebase", "exec"), namespace)
     with tempfile.TemporaryDirectory(prefix="vp-search-benchmark-") as temp:
         work = Path(temp)
-        root = work / "repository"
+        root = work / "repository 日本語 with spaces"
         root.mkdir()
         archive = subprocess.check_output(["git", "archive", ref], cwd=repository)
         with tarfile.open(fileobj=io.BytesIO(archive)) as tar:
-            tar.extractall(root, filter="data")
+            extract_repository_archive(tar, root)
         subprocess.run(["git", "init", "-q", str(root)], check=True, capture_output=True)
         # Both worker variants use the historical parent process controller.
-        worker_source = (root / "app/code_search.py").read_text()
+        worker_source = (root / "app/code_search.py").read_text(encoding="utf-8")
         variants = {}
-        for name in ("old_content_plus_filename", "content_only_worker"):
+        baseline_name = "baseline" if args.compare_ref else "old_content_plus_filename"
+        for name in ((baseline_name,) if args.compare_ref else (baseline_name, "content_only_worker")):
             worker = work / f"{name}.py"
-            worker.write_text(worker_source)
+            worker.write_text(worker_source, encoding="utf-8")
             spec = importlib.util.spec_from_file_location(name, worker)
             module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(module)
@@ -89,20 +106,21 @@ def main():
         executor.set_runtime_context(project_root=str(root), cwd=str(root))
         old_method = MethodType(namespace["search_codebase"], executor)
         report = {"platform": platform.platform(), "python": platform.python_version(), "snapshot": ref,
-                  "rg": subprocess.check_output([shutil.which("rg"), "--version"], text=True).splitlines()[0],
+                  "rg": utf8_output([shutil.which("rg"), "--version"]).splitlines()[0],
                   "content": {}}
-        # The requested query is absent in this snapshot; include a positive
-        # query as well, so an empty scan isn't the sole performance evidence.
+        # The requested query is absent in the original baseline; include a
+        # positive query too. Later snapshots may contain both in source/docs.
         for query in ("spawn_child_async", "class LocalToolExecutor"):
             report["content"][query] = {}
             for name, runner in variants.items():
-                call = old_method if name == "old_content_plus_filename" else executor.search_codebase
+                call = old_method if name == baseline_name else executor.search_codebase
                 with patch.object(code_search, "run_search", runner):
                     report["content"][query][name] = measure(lambda: call(query))
         report["filenames"] = {}
         for label, query in (("first", "vprb"), ("second", "vprb"), ("v", "v"), ("vp", "vp"), ("vpr", "vpr"), ("vprb", "vprb")):
             report["filenames"][label] = measure(lambda: executor.search_files(query), count=1)
-        print(json.dumps(report, ensure_ascii=False, indent=2))
+        # Keep the report printable even on legacy Windows console encodings.
+        print(json.dumps(report, ensure_ascii=True, indent=2))
 
 
 if __name__ == "__main__":

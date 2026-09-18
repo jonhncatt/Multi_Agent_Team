@@ -156,7 +156,7 @@ class SearchFilesArgs(BaseModel):
     query: str = Field(min_length=1, max_length=256, description="Fuzzy filename or path, e.g. vprb or runtime backend.")
     root: str = Field(default=".", description="Directory root under an allowed read root.")
     max_results: int = Field(default=20, ge=1, le=100, description="Maximum ranked filename matches returned.")
-    refresh: bool = Field(default=False, description="Rebuild the cached filename snapshot after filesystem or ignore changes.")
+    refresh: bool = Field(default=False, description="Rebuild after external filesystem or ignore changes; VP mutations already invalidate snapshots lazily.")
 
 
 class SearchCodebaseArgs(BaseModel):
@@ -919,7 +919,7 @@ class VPRuntimeBackend:
             ),
             self._StructuredTool.from_function(
                 name="search_files",
-                description="Fuzzy filename/path search using a reusable progressive snapshot. Check walk_complete; refresh after filesystem changes. Does not search contents.",
+                description="Fuzzy filename/path search using a reusable progressive snapshot. VP mutations invalidate automatically; check walk_complete and refresh after external changes. Does not search contents.",
                 args_schema=SearchFilesArgs,
                 func=self._search_files_tool,
             ),

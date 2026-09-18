@@ -8,8 +8,9 @@
 
 ## 本地工作区
 
-- 目录结构用 `list_dir`；模糊文件名或路径（如 `vprb`、`runtime backend`）用 `search_files`；精确 glob 模式用 `glob_file_search`；文件内容搜索用 `search_codebase`，它不再匹配文件名。文件名搜索复用快照：文件或 ignore 规则变化后传 `refresh: true`。`walk_complete` 为 false 时应重试，不完整结果不能证明文件不存在。搜索只覆盖指定 root，需要其他根目录时显式指定。
+- 目录结构用 `list_dir`；模糊文件名或路径（如 `vprb`、`runtime backend`）用 `search_files`；精确 glob 模式用 `glob_file_search`；文件内容搜索用 `search_codebase`，它不再匹配文件名。文件名搜索复用快照：外部修改文件或 ignore 规则后传 `refresh: true`。`walk_complete` 为 false 时应重试，不完整结果不能证明文件不存在。搜索只覆盖指定 root，需要其他根目录时显式指定。
 - `glob_file_search` 默认排除隐藏、Git 忽略及依赖目录；需要这些文件时设置 `include_ignored: true`，或将目标子目录指定为根目录。互不依赖的本地读取和搜索应在同一轮批量调用；全部为只读工具的批次最多四路并发执行。
+- VP 自己的文件修改会自动使文件名缓存失效，下次查询才重建；外部修改仍需手动 `refresh`。内容搜索默认排除 VP 运行时生成的历史证据，需要查看时显式指定该子目录。rg 大小上限启用时，完整性保守标为未知（`size_limit`），不能据此断言不存在。
 - 小文件或需要完整上下文时用 `read_file`；已知文件内搜索用 `search_contents_in_file`，多关键词用 `search_contents_in_file_multi`。
 - 工具结果若带有 `truncated` 和 `result_ref`，用 `read_tool_result` 按游标续读原始结果；不要为了补回被省略的输出而重复执行原工具，尤其不要重复有副作用的命令。
 - 章节、表格和文件事实核查分别用 `read_section`、`table_extract`、`fact_check_file`。

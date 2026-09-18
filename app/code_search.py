@@ -24,6 +24,30 @@ MAX_FILE_BYTES = 16 * 1024 * 1024
 MAX_LINE_BYTES = 64 * 1024
 RG_AUTO_THREADS = "0"
 SKIP_DIRS = {".git", ".venv", "venv", "node_modules", "__pycache__", ".pytest_cache", ".mypy_cache"}
+RUNTIME_SEARCH_EXCLUDED_PATHS = tuple(f"app/data/{name}" for name in (
+    "tool_results", "turn_traces", "sessions", "session_backups", "runs", "session_meta",
+    "tasks", "uploads", "browser_artifacts", "browser_profile", "desktop_browser_profile",
+    "desktop_webview2_profile", "document_cache", "web_cache", "evolution", "shadow_logs",
+    "subagents", "runtime", "apps",
+))
+
+
+def runtime_search_scope(root: Path) -> tuple[list[str], bool]:
+    """VP-only relative exclusions, never generic 'data' basename exclusions.
+
+    Explicit roots inside a runtime subtree opt in to its ignored files.
+    Markers are filesystem checks only, usable by the isolated stdlib worker.
+    """
+    for project in (root, *root.parents):
+        if not ((project / "app/local_tools.py").is_file()
+                and (project / "app/vintage_programmer_runtime.py").is_file()
+                and (project / "project_profiles/builtin/vintage-programmer/AGENTS.md").is_file()):
+            continue
+        paths = [project / path for path in RUNTIME_SEARCH_EXCLUDED_PATHS]
+        if any(root == path or path in root.parents for path in paths):
+            return [], True
+        return [path.relative_to(root).as_posix() for path in paths if root in path.parents], False
+    return [], False
 
 
 def _child_creation_kwargs() -> dict[str, Any]:
@@ -72,10 +96,13 @@ def _worker(request: dict[str, Any]) -> None:
     needle = query if request["case_sensitive"] else query.lower()
     contents = 0
     skipped = 0
+    size_skipped = 0
+    excluded, explicit_runtime = runtime_search_scope(root)
 
     def selected(path: Path) -> bool:
         relative = path.relative_to(root).as_posix()
-        return (not any(part in SKIP_DIRS for part in path.relative_to(root).parts[:-1])
+        return (not any(relative == prefix or relative.startswith(prefix + "/") for prefix in excluded)
+                and not any(part in SKIP_DIRS for part in path.relative_to(root).parts[:-1])
                 and (not glob or fnmatch.fnmatch(relative, glob)
                      or (glob.startswith("**/") and fnmatch.fnmatch(relative, glob[3:]))))
 
@@ -107,7 +134,7 @@ def _worker(request: dict[str, Any]) -> None:
     def candidates():
         # In Git worktrees use Git's ignore rules without requiring ripgrep.
         git = shutil.which("git")
-        if git:
+        if git and not explicit_runtime:
             check = subprocess.run([git, "-C", str(root), "rev-parse", "--is-inside-work-tree"],
                                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, **_child_creation_kwargs())
             if check.returncode == 0 and check.stdout.strip() == b"true":
@@ -116,7 +143,8 @@ def _worker(request: dict[str, Any]) -> None:
                     cwd=root, separator=b"\0"))
                 return
         for directory, dirs, names in os.walk(root, followlinks=False):
-            dirs[:] = [name for name in dirs if name not in SKIP_DIRS]
+            dirs[:] = [name for name in dirs if name not in SKIP_DIRS and not any(
+                (Path(directory) / name).relative_to(root).as_posix() == prefix for prefix in excluded)]
             for name in names:
                 yield Path(directory) / name
 
@@ -128,6 +156,7 @@ def _worker(request: dict[str, Any]) -> None:
         try:
             if path.stat().st_size > MAX_FILE_BYTES:
                 skipped += 1
+                size_skipped += 1
                 continue
             with path.open("rb") as source:
                 if b"\0" in source.read(8192):
@@ -148,7 +177,8 @@ def _worker(request: dict[str, Any]) -> None:
                             break
         except OSError:
             skipped += 1
-    _emit({"done": True, "limited": contents >= limit, "skipped_files": skipped})
+    _emit({"done": True, "limited": contents >= limit, "skipped_files": skipped,
+           "size_limit_applied": bool(size_skipped), "size_skipped_files": size_skipped})
 
 
 def _rg_argv(request: dict[str, Any]) -> list[str]:
@@ -161,6 +191,12 @@ def _rg_argv(request: dict[str, Any]) -> list[str]:
         argv += ["-g", f"!**/{directory}/**"]
     if request["file_glob"]:
         argv += ["-g", request["file_glob"]]
+    excluded, explicit_runtime = runtime_search_scope(Path(request["root"]))
+    if explicit_runtime:
+        argv += ["--hidden", "--no-ignore"]
+    # Last globs win: a broad user file_glob must not re-include historical evidence.
+    for prefix in excluded:
+        argv += ["-g", f"!/{prefix}/**"]
     return [*argv, "-e", request["query"], "--", "."]
 
 

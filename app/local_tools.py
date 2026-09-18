@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from bisect import bisect_right
+from functools import wraps
 import json
 import fnmatch
 import hashlib
@@ -1175,6 +1176,21 @@ def _parse_workspace_patch(patch_text: str) -> list[dict[str, Any]]:
             continue
         raise ValueError(f"Unsupported patch operation: {line}")
     raise ValueError("patch ended unexpectedly before '*** End Patch'")
+
+
+def _invalidates_filename_cache(method):
+    """Unknown/multi-destination writes may partially succeed even on failure.
+
+    Conservatively invalidate after mutation attempts, but never rescan here.
+    Decorate actual public methods so direct backend calls are covered too.
+    """
+    @wraps(method)
+    def wrapped(self, *args, **kwargs):
+        try:
+            return method(self, *args, **kwargs)
+        finally:
+            self._filename_search.invalidate()
+    return wrapped
 
 
 class LocalToolExecutor:
@@ -3528,6 +3544,7 @@ class LocalToolExecutor:
                             return
                         session["buffer"] = str(session.get("buffer") or "") + text
             finally:
+                self._filename_search.invalidate()
                 try:
                     stream.close()
                 except Exception:
@@ -4098,7 +4115,7 @@ class LocalToolExecutor:
             {
                 "type": "function",
                 "name": "search_files",
-                "description": "Fuzzy filename/path lookup (e.g. vprb or runtime backend), not content search. Reuses a progressive snapshot; use refresh after filesystem changes. Incomplete walks are not evidence of absence.",
+                "description": "Fuzzy filename/path lookup (e.g. vprb or runtime backend), not content search. VP writes invalidate snapshots lazily; use refresh after external filesystem changes. Incomplete walks are not evidence of absence.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -4817,6 +4834,7 @@ class LocalToolExecutor:
             normalized["path"] = normalized.pop("image_path")
         return normalized
 
+    @_invalidates_filename_cache
     def exec_command(
         self,
         cmd: str,
@@ -5279,6 +5297,7 @@ class LocalToolExecutor:
         payload.setdefault("summary", "command started")
         return payload
 
+    @_invalidates_filename_cache
     def write_stdin(
         self,
         session_id: int,
@@ -5534,6 +5553,7 @@ class LocalToolExecutor:
             or {}
         )
 
+    @_invalidates_filename_cache
     def save_skill(
         self,
         name: str,
@@ -5824,6 +5844,7 @@ class LocalToolExecutor:
             "summary": f"Found {len(matches)} matching Task(s).",
         }
 
+    @_invalidates_filename_cache
     def save_task(
         self,
         title: str,
@@ -6315,6 +6336,7 @@ class LocalToolExecutor:
         payload.setdefault("tool_name", "web_fetch")
         return payload
 
+    @_invalidates_filename_cache
     def web_download(
         self,
         url: str,
@@ -6621,6 +6643,7 @@ class LocalToolExecutor:
         }
         return payload
 
+    @_invalidates_filename_cache
     def archive_extract(
         self,
         zip_path: str,
@@ -6653,6 +6676,7 @@ class LocalToolExecutor:
         payload.setdefault("tool_name", "archive_extract")
         return payload
 
+    @_invalidates_filename_cache
     def mail_extract_attachments(
         self,
         msg_path: str,
@@ -6948,6 +6972,7 @@ class LocalToolExecutor:
             max_links=max_links,
         )
 
+    @_invalidates_filename_cache
     def browser_screenshot(self, path: str = "", full_page: bool = True) -> dict[str, Any]:
         try:
             target = (
@@ -7105,11 +7130,17 @@ class LocalToolExecutor:
                 }
 
             for target, content in pending_writes:
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_text(content, encoding="utf-8")
+                try:
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_text(content, encoding="utf-8")
+                finally:
+                    self._filename_search.invalidate(target)
             for target in pending_deletes:
                 if target.exists():
-                    target.unlink()
+                    try:
+                        target.unlink()
+                    finally:
+                        self._filename_search.invalidate(target)
             return {
                 "ok": True,
                 "cwd": str(real_cwd),
@@ -7986,6 +8017,11 @@ class LocalToolExecutor:
             real_root = self._resolve_path(root)
             if not real_root.is_dir():
                 return {"ok": False, "error_kind": "not_a_directory", "error": f"Not a directory: {root}"}
+            # A running shell can still create paths after its initial return.
+            with self._command_sessions_lock:
+                commands_running = any(session["proc"].poll() is None for session in self._command_sessions.values())
+            if commands_running:
+                self._filename_search.invalidate()
             result = self._filename_search.search(
                 real_root, query, max(1, min(100, int(max_results))),
                 refresh=bool(refresh), cancelled=self._current_cancel_requested,
@@ -7999,7 +8035,7 @@ class LocalToolExecutor:
             result.update(root=root_payload["path"], root_ref=root_payload["root_ref"], resolved_root=str(real_root))
             result["search_scope"] = {"hidden_files": False, "symlinks": False,
                                       "ignore_files": [".gitignore", ".ignore", ".rgignore"],
-                                      "note": "Snapshot of this root; refresh=true after filesystem/ignore changes. Git global excludes are not loaded."}
+                                      "note": "VP mutations invalidate snapshots lazily. Use refresh=true after external filesystem/ignore changes. Git global excludes are not loaded."}
             return result
         except Exception as exc:
             return {"ok": False, "error": f"search_files failed: {exc}"}
@@ -8008,7 +8044,7 @@ class LocalToolExecutor:
         self, query: str, root: str = ".", max_matches: int = 20,
         file_glob: str = "", use_regex: bool = False, case_sensitive: bool = False,
     ) -> dict[str, Any]:
-        from app.code_search import MAX_FILE_BYTES, SKIP_DIRS, run_search
+        from app.code_search import MAX_FILE_BYTES, SKIP_DIRS, run_search, runtime_search_scope
 
         try:
             cleaned_query = str(query or "").strip()
@@ -8035,6 +8071,9 @@ class LocalToolExecutor:
                 path = Path(item["resolved_path"])
                 item["path"] = _display_model_path(path, project_root=self._current_project_root(), cwd=real_root)
             reason = payload.get("stop_reason", "")
+            size_limited = bool(payload.get("size_limit_applied"))
+            if not reason and size_limited:
+                reason = "size_limit"
             incomplete = bool(reason or payload.get("skipped_files") or len(matches) > limit)
             root_payload = _path_payload(real_root, project_root=self._current_project_root(), cwd=Path(self._current_cwd_hint()))
             result = {
@@ -8050,7 +8089,13 @@ class LocalToolExecutor:
                 "execution_mode": "direct_rg" if rg else "isolated_python",
                 "duration_ms": payload.get("duration_ms", 0),
                 "stop_reason": reason, "skipped_files": payload.get("skipped_files", 0),
+                "size_limit_applied": size_limited,
+                "size_limit_policy": "conservative_unknown" if rg else "observed_skips",
+                "size_skipped_files": payload.get("size_skipped_files"),
+                "max_file_bytes": MAX_FILE_BYTES,
                 "search_scope": {"excluded_directories": sorted(SKIP_DIRS), "max_file_bytes": MAX_FILE_BYTES,
+                                 "excluded_runtime_paths": runtime_search_scope(real_root)[0],
+                                 "size_limit_note": "rg cannot report the number omitted by its size cap; completeness is conservatively unknown when that cap is active.",
                                  "note": "Results cover eligible text files; specify an excluded directory as root to search it."},
                 "truncated": incomplete, "has_more": incomplete,
                 "source_complete": not incomplete, "search_complete": not incomplete,
@@ -8061,6 +8106,11 @@ class LocalToolExecutor:
             if reason in {"cancelled", "worker_failed"}:
                 result["error_kind"] = "cancelled" if reason == "cancelled" else "search_failed"
                 result["error"] = payload.get("error") or ("Search cancelled by user." if reason == "cancelled" else "Search worker exited without a result.")
+            elif reason == "size_limit":
+                result["continuation"] = {
+                    "strategy": "inspect_size_limited_files",
+                    "message": "Files over max_file_bytes may be unsearched. Inspect suspected large files with read_file or search_contents_in_file and check those tools' completeness; narrowing this query alone does not remove the size cap.",
+                }
             return result
         except Exception as exc:
             return {"ok": False, "error": f"search_codebase failed: {exc}"}

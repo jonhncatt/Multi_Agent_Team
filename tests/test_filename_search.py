@@ -13,6 +13,13 @@ from app.local_tools import LocalToolExecutor
 from tests.test_local_tools_public_surface import _config
 
 
+def symlink_or_skip(link, target, *, directory=False):
+    try:
+        link.symlink_to(target, target_is_directory=directory)
+    except OSError as exc:
+        pytest.skip(f"Symlink capability unavailable: {exc}")
+
+
 def search(service, root, query="vprb", **kwargs):
     return service.search(root, query, kwargs.pop("limit", 20), refresh=kwargs.pop("refresh", False),
                           cancelled=kwargs.pop("cancelled", lambda: False), **kwargs)
@@ -62,7 +69,7 @@ def test_corpus_reused_refreshed_and_isolated_by_root(tmp_path, monkeypatch):
     assert completed(service, other)["matches"] == []
 
 
-def test_walker_ignores_nested_rules_hidden_dependencies_and_symlinks(tmp_path, monkeypatch):
+def test_walker_ignores_nested_rules_hidden_dependencies(tmp_path, monkeypatch):
     monkeypatch.setattr("shutil.which", lambda *_: None)
     (tmp_path / ".gitignore").write_text("*.tmp\nbuild/\n")
     (tmp_path / ".ignore").write_text("*.log\n")
@@ -75,11 +82,27 @@ def test_walker_ignores_nested_rules_hidden_dependencies_and_symlinks(tmp_path, 
         target = tmp_path / path
         target.parent.mkdir(parents=True, exist_ok=True)
         target.touch()
-    (tmp_path / "linked.py").symlink_to(tmp_path / "visible.py")
-    (tmp_path / "linked_dir").symlink_to(sub, target_is_directory=True)
     result = completed(FilenameSearch(), tmp_path, "p")
     assert result["walk_complete"]
     assert {m["path"] for m in result["matches"]} == {"visible.py", "sub/keep.tmp", "sub/deep/anchored.py"}
+
+
+def test_walker_skips_symlinks_when_supported(tmp_path):
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    (sub / "visible.py").touch()
+    symlink_or_skip(tmp_path / "linked.py", sub / "visible.py")
+    symlink_or_skip(tmp_path / "linked_dir", sub, directory=True)
+    result = completed(FilenameSearch(), tmp_path, "py")
+    assert {item["path"] for item in result["matches"]} == {"sub/visible.py"}
+
+
+def test_symlink_permission_failure_is_capability_skip(tmp_path, monkeypatch):
+    def denied(*args, **kwargs):
+        raise PermissionError("SeCreateSymbolicLinkPrivilege unavailable")
+    monkeypatch.setattr(Path, "symlink_to", denied)
+    with pytest.raises(pytest.skip.Exception):
+        symlink_or_skip(tmp_path / "link", tmp_path / "target")
 
 
 def test_progressive_walk_can_be_searched_before_finishing(tmp_path, monkeypatch):
@@ -187,9 +210,106 @@ def test_cached_path_is_revalidated_after_symlink_replacement(tmp_path):
     target.touch()
     assert executor.search_files("vprb")["matches"]
     target.unlink()
-    target.symlink_to(tmp_path.parent / "outside.py")
+    symlink_or_skip(target, tmp_path.parent / "outside.py")
     result = executor.search_files("vprb")
     assert not result["ok"]
+
+
+def test_cached_results_pass_permission_resolver_without_symlink_privilege(tmp_path, monkeypatch):
+    executor = LocalToolExecutor(_config(tmp_path))
+    executor.set_runtime_context(project_root=str(tmp_path), cwd=str(tmp_path))
+    target = tmp_path / "vp_runtime_backend.py"
+    target.touch()
+    assert executor.search_files("vprb")["matches"]
+    original = executor._resolve_path
+    checked = []
+    def revoked(path):
+        checked.append(path)
+        if Path(path) == target:
+            raise PermissionError("permission revoked")
+        return original(path)
+    monkeypatch.setattr(executor, "_resolve_path", revoked)
+    assert not executor.search_files("vprb")["ok"]
+    assert str(target) in checked
+
+
+def test_patch_create_rename_delete_invalidate_lazily_and_reads_reuse(tmp_path, monkeypatch):
+    executor = LocalToolExecutor(_config(tmp_path))
+    executor.set_runtime_context(project_root=str(tmp_path), cwd=str(tmp_path))
+    executor.search_files("fresh")
+    walks = []
+    original = filename_search._walk
+    def tracked(corpus):
+        walks.append(corpus.root)
+        original(corpus)
+    monkeypatch.setattr(filename_search, "_walk", tracked)
+    assert executor.apply_patch("*** Begin Patch\n*** Add File: fresh.py\n+hello\n*** End Patch")["ok"]
+    assert not walks
+    result = executor.search_files("fresh")
+    assert not result["cache_hit"] and result["matches"][0]["path"] == "fresh.py"
+    executor.read_file("fresh.py")
+    executor.search_codebase("hello")
+    assert executor.search_files("fresh")["cache_hit"]
+    assert executor.apply_patch("*** Begin Patch\n*** Update File: fresh.py\n*** Move to: renamed.py\n@@\n-hello\n+hello again\n*** End Patch")["ok"]
+    assert len(walks) == 1
+    assert executor.search_files("renamed")["matches"]
+    assert not executor.search_files("fresh")["matches"]
+    assert executor.apply_patch("*** Begin Patch\n*** Delete File: renamed.py\n*** End Patch")["ok"]
+    assert not executor.search_files("renamed")["matches"]
+
+
+def test_invalidate_only_affected_roots(tmp_path):
+    left, right = tmp_path / "left", tmp_path / "right"
+    left.mkdir()
+    right.mkdir()
+    service = FilenameSearch()
+    completed(service, left)
+    completed(service, right)
+    service.invalidate(left / "new.py")
+    assert search(service, right)["cache_hit"]
+    assert not search(service, left)["cache_hit"]
+
+
+def test_mutation_invalidates_other_executor_for_same_project(tmp_path):
+    parent = LocalToolExecutor(_config(tmp_path))
+    child = LocalToolExecutor(_config(tmp_path))
+    for executor in (parent, child):
+        executor.set_runtime_context(project_root=str(tmp_path), cwd=str(tmp_path))
+        executor.search_files("fresh")
+    assert child.apply_patch("*** Begin Patch\n*** Add File: fresh.py\n+hello\n*** End Patch")["ok"]
+    result = parent.search_files("fresh")
+    assert not result["cache_hit"] and result["matches"][0]["path"] == "fresh.py"
+
+
+@pytest.mark.parametrize("tool,impl,args", [
+    ("web_download", "_web_download_impl", {"url": "https://example.invalid/file", "dst_path": "fresh.py"}),
+    ("archive_extract", "_archive_extract_impl", {"zip_path": "source.zip"}),
+    ("mail_extract_attachments", "_mail_extract_attachments_impl", {"msg_path": "source.msg"}),
+])
+def test_native_partial_writes_invalidate_without_scanning(tmp_path, monkeypatch, tool, impl, args):
+    executor = LocalToolExecutor(_config(tmp_path))
+    executor.set_runtime_context(project_root=str(tmp_path), cwd=str(tmp_path))
+    executor.search_files("fresh")
+    def partial_write(**kwargs):
+        (tmp_path / "fresh.py").write_text("partial", encoding="utf-8")
+        return {"ok": False, "error": "simulated interruption after one file"}
+    monkeypatch.setattr(executor, impl, partial_write)
+    assert not getattr(executor, tool)(**args)["ok"]
+    result = executor.search_files("fresh")
+    assert not result["cache_hit"] and result["matches"]
+
+
+def test_archive_extract_invalidates_corpus(tmp_path):
+    import zipfile
+    executor = LocalToolExecutor(_config(tmp_path))
+    executor.set_runtime_context(project_root=str(tmp_path), cwd=str(tmp_path))
+    archive = tmp_path / "sample.zip"
+    with zipfile.ZipFile(archive, "w") as output:
+        output.writestr("fresh.py", "hello")
+    executor.search_files("fresh")
+    assert executor.archive_extract(str(archive), dst_dir=str(tmp_path / "out"))["ok"]
+    result = executor.search_files("fresh")
+    assert not result["cache_hit"] and result["matches"][0]["path"] == "out/fresh.py"
 
 
 def test_public_surface_and_root_permission_checks(tmp_path):

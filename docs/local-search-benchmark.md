@@ -39,8 +39,11 @@ LRU eviction signals the old walker to stop. As with filesystem threads in
 general, an OS-level blocked filesystem call cannot be forcibly interrupted;
 the caller can still return without waiting for that daemon walker.
 
-No automatic freshness claim is made: after creating, deleting, renaming files
-or editing ignore rules, call with `refresh=true`. `cache_hit`, `indexed_at`,
+VP file mutations now invalidate affected snapshots lazily, including snapshots
+held by other executors/subagents in the same process. Multi-destination writes
+and shell operations invalidate conservatively, including partial failures.
+Read-only tools do not invalidate. After external changes or changes from a
+different VP process, call with `refresh=true`. `cache_hit`, `indexed_at`,
 `scanned_file_count`, `walk_complete` and `duration_ms` describe the snapshot.
 Every invocation rechecks its root and returned paths against current read
 permissions, including cached paths replaced by symlinks.
@@ -103,6 +106,10 @@ Short broad queries return 20 results and are explicitly truncated. Narrow
 `vprb` returns two paths. All warm queries reuse the same filename corpus.
 
 ## Verification
+
+For the later portability/correctness fixes and updated test results, see
+[Local Search correctness follow-up](local-search-correctness.md). The measurements
+above describe the original split implementation, not the follow-up patch.
 
 Full Python suite with pathspec 0.12.1: **1021 passed, 1 skipped**. Search tests
 cover no-rg fallback, content-only semantics, direct process count, invalid

@@ -13,11 +13,12 @@ import os
 from pathlib import Path
 import threading
 import time
+import weakref
 from typing import Callable
 
 from pathspec import GitIgnoreSpec
 
-from app.code_search import SEARCH_TIMEOUT_SECONDS, SKIP_DIRS
+from app.code_search import SEARCH_TIMEOUT_SECONDS, SKIP_DIRS, runtime_search_scope
 
 MAX_CACHED_ROOTS = 8
 MAX_FILES = 200_000
@@ -44,6 +45,7 @@ def _walk(corpus: Corpus) -> None:
     # have Git-style relative semantics. Excluded directories are never entered.
     pending: list[tuple[Path, tuple]] = [(corpus.root, ())]
     try:
+        excluded, _ = runtime_search_scope(corpus.root)
         while pending:
             if corpus.stop.is_set() or time.monotonic() >= deadline:
                 corpus.reason = "superseded" if corpus.stop.is_set() else "walk_timeout"
@@ -76,6 +78,8 @@ def _walk(corpus: Corpus) -> None:
                         try:
                             is_dir = entry.is_dir(follow_symlinks=False)
                             path = Path(entry.path)
+                            if path.relative_to(corpus.root).as_posix() in excluded:
+                                continue
                             ignored = False
                             for base, spec in reversed(rules):
                                 relative = path.relative_to(base).as_posix() + ("/" if is_dir else "")
@@ -155,10 +159,31 @@ def fuzzy_score(query: str, path: str) -> int | None:
 
 
 class FilenameSearch:
+    _instances: weakref.WeakSet = weakref.WeakSet()
+    _instances_lock = threading.Lock()
+
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._corpora: OrderedDict[Path, Corpus] = OrderedDict()
         self._match_slots = threading.BoundedSemaphore(4)
+        with self._instances_lock:
+            self._instances.add(self)
+
+    def invalidate(self, path: Path | None = None) -> None:
+        """Drop affected snapshots lazily; never start a walk on a write path.
+
+        None is for mutations whose destinations are unknown (e.g. shell).
+        Stop superseded walkers so they cannot repopulate the cache.
+        """
+        # Subagents own separate executors. Notify their snapshots too, without
+        # sharing corpus data or retaining closed executors indefinitely.
+        with self._instances_lock:
+            instances = list(self._instances)
+        for instance in instances:
+            with instance._lock:
+                for root in list(instance._corpora):
+                    if path is None or root == path or root in path.parents or path in root.parents:
+                        instance._corpora.pop(root).stop.set()
 
     def search(self, root: Path, query: str, limit: int, *, refresh: bool,
                cancelled: Callable[[], bool]) -> dict:
