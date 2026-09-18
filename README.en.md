@@ -1,6 +1,6 @@
 # Vintage Programmer
 
-![Version](https://img.shields.io/badge/version-3.1.6C-blue)
+![Version](https://img.shields.io/badge/version-3.1.6D-blue)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Backend](https://img.shields.io/badge/backend-FastAPI-green)
 ![Browser](https://img.shields.io/badge/browser-Playwright-green)
@@ -15,7 +15,7 @@ Instead of hiding the process, it exposes the loop:
 
 [Chinese README](README.zh-CN.md) · [Japanese README](README.ja.md) · [English README](README.en.md) · [Windows Guide](README.windows.md) · [Documentation Index](docs/README.md) · [Release Flow](RELEASING.md)
 
-Current stable release: `3.1.6C`
+Current stable release: `3.1.6D`
 
 ## Stable Runtime
 
