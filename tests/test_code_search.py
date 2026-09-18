@@ -274,3 +274,30 @@ def test_oversize_only_match_never_claims_complete(tmp_path, monkeypatch, rg):
     assert not result["search_complete"] and not result["source_complete"]
     assert result["truncated"] and result["continuation"]
     assert result["max_file_bytes"] == code_search.MAX_FILE_BYTES
+
+
+@pytest.mark.parametrize("rg", [False, True])
+def test_long_match_text_has_bounded_output_and_explicit_flags(tmp_path, monkeypatch, rg):
+    if rg and not shutil.which("rg"):
+        pytest.skip("rg not installed")
+    tools = _search(tmp_path, monkeypatch, rg=rg)
+    (tmp_path / "large-lines.txt").write_text(("needle " + "x" * 6000 + "\n") * 12, encoding="utf-8")
+    result = tools.search_codebase("needle", max_matches=20)
+    assert result["match_count"] == 12
+    assert all(len(item["text"]) <= 2000 and item["text_truncated"] for item in result["matches"])
+    assert sum(len(item["text"]) for item in result["matches"]) <= 16000
+    assert all(item["original_text_chars"] == 6007 for item in result["matches"])
+    assert result["output_truncated"] and result["truncated"] and not result["search_complete"]
+
+
+@pytest.mark.skipif(shutil.which("rg") is None, reason="rg not installed")
+def test_direct_rg_computes_runtime_scope_once_per_call(tmp_path, monkeypatch):
+    tools = _search(tmp_path, monkeypatch, rg=True)
+    calls = []
+    original = code_search.runtime_search_scope
+    def counted(root):
+        calls.append(root)
+        return original(root)
+    monkeypatch.setattr(code_search, "runtime_search_scope", counted)
+    result = tools.search_codebase("absent")
+    assert result["ok"] and calls == [tmp_path]

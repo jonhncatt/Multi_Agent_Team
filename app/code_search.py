@@ -22,6 +22,7 @@ from typing import Any, Callable
 SEARCH_TIMEOUT_SECONDS = 20.0
 MAX_FILE_BYTES = 16 * 1024 * 1024
 MAX_LINE_BYTES = 64 * 1024
+MAX_MATCH_TEXT_CHARS = 2000
 RG_AUTO_THREADS = "0"
 SKIP_DIRS = {".git", ".venv", "venv", "node_modules", "__pycache__", ".pytest_cache", ".mypy_cache"}
 RUNTIME_SEARCH_EXCLUDED_PATHS = tuple(f"app/data/{name}" for name in (
@@ -58,6 +59,12 @@ def _child_creation_kwargs() -> dict[str, Any]:
 
 def _emit(payload: dict[str, Any]) -> None:
     print(json.dumps(payload, ensure_ascii=True), flush=True)
+
+
+def _match_payload(path: Path, line: int, text: str) -> dict[str, Any]:
+    text = text.strip()
+    return {"resolved_path": str(path), "line": line, "text": text[:MAX_MATCH_TEXT_CHARS],
+            "text_truncated": len(text) > MAX_MATCH_TEXT_CHARS, "original_text_chars": len(text)}
 
 
 def _process_lines(argv: list[str], *, cwd: Path, separator: bytes = b"\n"):
@@ -120,7 +127,7 @@ def _worker(request: dict[str, Any]) -> None:
                     skipped += 1
                     continue
                 contents += 1
-                _emit({"match": {"resolved_path": str(root / name), "line": data["line_number"], "text": text.strip()[:MAX_LINE_BYTES]}})
+                _emit({"match": _match_payload(root / name, data["line_number"], text)})
                 if contents >= limit:
                     break
         finally:
@@ -172,12 +179,13 @@ def _worker(request: dict[str, Any]) -> None:
                     hay = line if request["case_sensitive"] else line.lower()
                     if (bool(pattern.search(line)) if pattern else needle in hay):
                         contents += 1
-                        _emit({"match": {"resolved_path": str(path), "line": line_number, "text": line.strip()}})
+                        _emit({"match": _match_payload(path, line_number, line)})
                         if contents >= limit:
                             break
         except OSError:
             skipped += 1
     _emit({"done": True, "limited": contents >= limit, "skipped_files": skipped,
+           "runtime_excluded_paths": excluded,
            "size_limit_applied": bool(size_skipped), "size_skipped_files": size_skipped})
 
 
@@ -191,7 +199,8 @@ def _rg_argv(request: dict[str, Any]) -> list[str]:
         argv += ["-g", f"!**/{directory}/**"]
     if request["file_glob"]:
         argv += ["-g", request["file_glob"]]
-    excluded, explicit_runtime = runtime_search_scope(Path(request["root"]))
+    scope = request.get("runtime_scope")
+    excluded, explicit_runtime = scope if scope is not None else runtime_search_scope(Path(request["root"]))
     if explicit_runtime:
         argv += ["--hidden", "--no-ignore"]
     # Last globs win: a broad user file_glob must not re-include historical evidence.
@@ -208,6 +217,8 @@ def run_search(request: dict[str, Any], *, cancelled: Callable[[], bool],
     events: queue.Queue[Any] = queue.Queue(maxsize=256)
     reader_stop = threading.Event()
     direct = bool(request.get("rg"))
+    if direct:
+        request = {**request, "runtime_scope": runtime_search_scope(Path(request["root"]))}
     errors = tempfile.TemporaryFile()
     try:
         proc = subprocess.Popen(
@@ -277,8 +288,7 @@ def run_search(request: dict[str, Any], *, cancelled: Callable[[], bool],
                 if name is None or text is None:
                     result["skipped_files"] = result.get("skipped_files", 0) + 1
                     continue
-                result["matches"].append({"resolved_path": str(Path(request["root"]) / name),
-                                          "line": data["line_number"], "text": text.strip()[:MAX_LINE_BYTES]})
+                result["matches"].append(_match_payload(Path(request["root"]) / name, data["line_number"], text))
                 if len(result["matches"]) > request["limit"]:
                     result["stop_reason"] = "limit"
                     break
@@ -307,6 +317,7 @@ def run_search(request: dict[str, Any], *, cancelled: Callable[[], bool],
         errors.close()
     if direct:
         result["size_limit_applied"] = True
+        result["runtime_excluded_paths"] = request["runtime_scope"][0]
     result["duration_ms"] = int((time.monotonic() - started) * 1000)
     return result
 

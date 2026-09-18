@@ -1,5 +1,10 @@
 # Local Search portability and correctness follow-up
 
+> The historical timings below came from the former mixed-helper benchmark.
+> They do not establish a full-version performance improvement. See
+> [the replacement measurement and investigation](local-search-performance-investigation.md)
+> for the corrected methodology and remaining Windows investigation.
+
 Based on `549c6ff9` on `codex/rg-local-search-optimizations`. The Python filename
 walker/corpus/matcher, direct rg and isolated no-rg fallback remain unchanged
 architecturally. No Nucleo, Rust, watcher, database or runtime rewrite.

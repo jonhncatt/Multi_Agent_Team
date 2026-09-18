@@ -115,6 +115,20 @@ def _display_model_path(path: Path, *, project_root: Path, cwd: Path | None = No
     return str(resolved)
 
 
+def _display_resolved_search_path(path: Path, *, project_root: Path, cwd: Path) -> str:
+    """Format already-resolved search paths; NOT a permission resolver.
+
+    Filename results must still pass _resolve_path individually before this.
+    Avoid re-resolving the same path and display roots for every returned hit.
+    """
+    for root in (project_root, cwd):
+        try:
+            return path.relative_to(root).as_posix()
+        except ValueError:
+            pass
+    return str(path)
+
+
 def _path_payload(path: Path, *, project_root: Path, cwd: Path | None = None) -> dict[str, Any]:
     resolved = path.resolve()
     model_path = _display_model_path(resolved, project_root=project_root, cwd=cwd)
@@ -8026,11 +8040,12 @@ class LocalToolExecutor:
                 real_root, query, max(1, min(100, int(max_results))),
                 refresh=bool(refresh), cancelled=self._current_cancel_requested,
             )
+            display_root = self._current_project_root()
             for item in result["matches"]:
                 # Revalidate cached paths against today's permission boundary.
                 path = self._resolve_path(str(real_root / item["path"]))
                 item["resolved_path"] = str(path)
-                item["path"] = _display_model_path(path, project_root=self._current_project_root(), cwd=real_root)
+                item["path"] = _display_resolved_search_path(path, project_root=display_root, cwd=real_root)
             root_payload = _path_payload(real_root, project_root=self._current_project_root(), cwd=Path(self._current_cwd_hint()))
             result.update(root=root_payload["path"], root_ref=root_payload["root_ref"], resolved_root=str(real_root))
             result["search_scope"] = {"hidden_files": False, "symlinks": False,
@@ -8044,7 +8059,7 @@ class LocalToolExecutor:
         self, query: str, root: str = ".", max_matches: int = 20,
         file_glob: str = "", use_regex: bool = False, case_sensitive: bool = False,
     ) -> dict[str, Any]:
-        from app.code_search import MAX_FILE_BYTES, SKIP_DIRS, run_search, runtime_search_scope
+        from app.code_search import MAX_FILE_BYTES, MAX_MATCH_TEXT_CHARS, SKIP_DIRS, run_search
 
         try:
             cleaned_query = str(query or "").strip()
@@ -8067,14 +8082,24 @@ class LocalToolExecutor:
             )
             matches = payload["matches"]
             visible = matches[:limit]
+            display_root = self._current_project_root()
+            remaining_text = 16000
             for item in visible:
-                path = Path(item["resolved_path"])
-                item["path"] = _display_model_path(path, project_root=self._current_project_root(), cwd=real_root)
+                path = Path(item["resolved_path"]).resolve()
+                item["path"] = _display_resolved_search_path(path, project_root=display_root, cwd=real_root)
+                text = item.get("text", "")
+                if len(text) > remaining_text:
+                    item["text_truncated"] = True
+                    item["text"] = text[:remaining_text]
+                remaining_text -= len(item.get("text", ""))
+            output_truncated = any(item.get("text_truncated") for item in visible)
             reason = payload.get("stop_reason", "")
             size_limited = bool(payload.get("size_limit_applied"))
             if not reason and size_limited:
                 reason = "size_limit"
-            incomplete = bool(reason or payload.get("skipped_files") or len(matches) > limit)
+            if not reason and output_truncated:
+                reason = "output_limit"
+            incomplete = bool(reason or payload.get("skipped_files") or len(matches) > limit or output_truncated)
             root_payload = _path_payload(real_root, project_root=self._current_project_root(), cwd=Path(self._current_cwd_hint()))
             result = {
                 "ok": reason not in {"cancelled", "worker_failed"},
@@ -8093,8 +8118,10 @@ class LocalToolExecutor:
                 "size_limit_policy": "conservative_unknown" if rg else "observed_skips",
                 "size_skipped_files": payload.get("size_skipped_files"),
                 "max_file_bytes": MAX_FILE_BYTES,
+                "output_truncated": output_truncated,
+                "max_match_text_chars": MAX_MATCH_TEXT_CHARS, "max_output_text_chars": 16000,
                 "search_scope": {"excluded_directories": sorted(SKIP_DIRS), "max_file_bytes": MAX_FILE_BYTES,
-                                 "excluded_runtime_paths": runtime_search_scope(real_root)[0],
+                                 "excluded_runtime_paths": payload.get("runtime_excluded_paths", []),
                                  "size_limit_note": "rg cannot report the number omitted by its size cap; completeness is conservatively unknown when that cap is active.",
                                  "note": "Results cover eligible text files; specify an excluded directory as root to search it."},
                 "truncated": incomplete, "has_more": incomplete,
@@ -8111,6 +8138,8 @@ class LocalToolExecutor:
                     "strategy": "inspect_size_limited_files",
                     "message": "Files over max_file_bytes may be unsearched. Inspect suspected large files with read_file or search_contents_in_file and check those tools' completeness; narrowing this query alone does not remove the size cap.",
                 }
+            elif reason == "output_limit":
+                result["continuation"] = {"strategy": "read_matching_files", "message": "Match text was truncated. Read the indicated file and line for complete evidence."}
             return result
         except Exception as exc:
             return {"ok": False, "error": f"search_codebase failed: {exc}"}

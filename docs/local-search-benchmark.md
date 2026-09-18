@@ -1,5 +1,10 @@
 # Local search split and direct rg
 
+> Historical timing note: the original benchmark mixed baseline methods with
+> current helper code. Its timings are not full-version comparisons and must
+> not be used to claim a current or Windows speedup. See
+> [the replacement measurement and investigation](local-search-performance-investigation.md).
+
 ## Tool contracts
 
 - `search_files(query, root=".", max_results=20, refresh=false)` searches fuzzy
