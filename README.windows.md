@@ -1,6 +1,6 @@
 # Vintage Programmer Windows 指南
 
-当前稳定版本：`3.1.6D`。
+当前稳定版本：`3.1.6C1`。
 
 ## Stable Runtime
 
