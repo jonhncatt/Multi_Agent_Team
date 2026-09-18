@@ -368,6 +368,8 @@ function createEmptyThreadActiveTurn() {
     lastResponse: null,
     toolTimeline: [],
     liveToolTimeline: [],
+    toolCount: 0,
+    toolEventIds: [],
     liveTurnState: {},
     liveEvidence: {},
     liveRunLogs: [],
@@ -402,6 +404,15 @@ function normalizeThreadActiveTurn(raw) {
     lastResponse: item.lastResponse && typeof item.lastResponse === "object" ? item.lastResponse : null,
     toolTimeline: Array.isArray(item.toolTimeline) ? item.toolTimeline : [],
     liveToolTimeline: Array.isArray(item.liveToolTimeline) ? item.liveToolTimeline : [],
+    toolCount: Math.max(
+      0,
+      Number(item.toolCount ?? item.tool_count ?? 0) || 0,
+      Array.isArray(item.toolTimeline) ? item.toolTimeline.length : 0,
+      Array.isArray(item.liveToolTimeline) ? item.liveToolTimeline.length : 0,
+    ),
+    toolEventIds: Array.isArray(item.toolEventIds || item.tool_event_ids)
+      ? (item.toolEventIds || item.tool_event_ids).map((value) => String(value || "").trim()).filter(Boolean)
+      : [],
     liveTurnState: item.liveTurnState && typeof item.liveTurnState === "object" ? item.liveTurnState : {},
     liveEvidence: item.liveEvidence && typeof item.liveEvidence === "object" ? item.liveEvidence : {},
     liveRunLogs: Array.isArray(item.liveRunLogs) ? item.liveRunLogs : [],
@@ -418,6 +429,81 @@ function normalizeThreadActiveTurn(raw) {
             queuedAt: normalizeActivityTimestamp(entry.queuedAt || entry.queued_at || 0),
           }))
       : [],
+  };
+}
+
+function runtimeToolIdentity(item) {
+  const entry = item && typeof item === "object" ? item : {};
+  const rawCall = entry.raw_tool_call && typeof entry.raw_tool_call === "object" ? entry.raw_tool_call : {};
+  const validation = entry.validation_result && typeof entry.validation_result === "object" ? entry.validation_result : {};
+  return String(
+    entry.tool_call_id || rawCall.id || validation.call_id || entry.call_id || entry.id || "",
+  ).trim();
+}
+
+function mergeRuntimeToolTimeline(previous, incoming) {
+  const result = [];
+  const seen = new Set();
+  const previousItems = Array.isArray(previous) ? previous : [];
+  const previousByIdentity = new Map();
+  for (const item of previousItems) {
+    const identity = runtimeToolIdentity(item);
+    if (identity && !previousByIdentity.has(identity)) previousByIdentity.set(identity, item);
+  }
+  const incomingNewestFirst = (Array.isArray(incoming) ? incoming : []).slice().reverse();
+  for (const item of [...incomingNewestFirst, ...previousItems]) {
+    if (!item || typeof item !== "object") continue;
+    const identity = runtimeToolIdentity(item);
+    if (identity && seen.has(identity)) continue;
+    if (identity) seen.add(identity);
+    result.push(identity && previousByIdentity.has(identity)
+      ? { ...previousByIdentity.get(identity), ...item }
+      : item);
+  }
+  return result.slice(0, RECENT_TOOL_TIMELINE_LIMIT);
+}
+
+function mergeRuntimeToolState(previous, incoming, options = {}) {
+  const prior = previous && typeof previous === "object" ? previous : {};
+  const incomingItems = Array.isArray(incoming) ? incoming.filter((item) => item && typeof item === "object") : [];
+  const knownIds = [];
+  const known = new Set();
+  for (const value of [
+    ...(Array.isArray(prior.toolEventIds) ? prior.toolEventIds : []),
+    ...(Array.isArray(options.toolEventIds) ? options.toolEventIds : []),
+  ]) {
+    const identity = String(value || "").trim();
+    if (!identity || known.has(identity)) continue;
+    known.add(identity);
+    knownIds.push(identity);
+  }
+  for (const item of [...(Array.isArray(prior.liveToolTimeline) ? prior.liveToolTimeline : []),
+    ...(Array.isArray(prior.toolTimeline) ? prior.toolTimeline : [])]) {
+    const identity = runtimeToolIdentity(item);
+    if (!identity || known.has(identity)) continue;
+    known.add(identity);
+    knownIds.push(identity);
+  }
+  let toolCount = Math.max(
+    0,
+    Number(prior.toolCount || 0) || 0,
+    knownIds.length,
+  );
+  for (const item of incomingItems) {
+    const identity = runtimeToolIdentity(item);
+    if (identity) {
+      if (known.has(identity)) continue;
+      known.add(identity);
+      knownIds.push(identity);
+    }
+    toolCount += 1;
+  }
+  toolCount = Math.max(toolCount, Number(options.minimumCount || 0) || 0);
+  return {
+    toolTimeline: mergeRuntimeToolTimeline(prior.toolTimeline, incomingItems),
+    liveToolTimeline: mergeRuntimeToolTimeline(prior.liveToolTimeline, incomingItems),
+    toolCount,
+    toolEventIds: knownIds,
   };
 }
 
@@ -3115,6 +3201,7 @@ function buildRuntimeStatsSummary({
   activityClockMs,
   hasLiveRuntimeState,
   liveToolTimeline,
+  liveToolCount = 0,
   inspectorToolTimeline,
   fallbackToolTimeline,
   contextMeter,
@@ -3150,6 +3237,9 @@ function buildRuntimeStatsSummary({
     inspectorToolTimeline,
     fallbackToolTimeline,
   });
+  const totalToolCount = hasLiveRuntimeState
+    ? Math.max(toolTimeline.length, Number(liveToolCount || 0) || 0)
+    : toolTimeline.length;
   let succeeded = 0;
   let failed = 0;
   let rejected = 0;
@@ -3221,7 +3311,7 @@ function buildRuntimeStatsSummary({
     compact: [
       { key: "usage", text: compactUsage },
       { key: "tokens", text: compactTokens },
-      { key: "elapsed_tools", text: translateUi(locale, "context_meter.compact_elapsed_tools", { elapsed: elapsedValue, count: toolTimeline.length }) },
+      { key: "elapsed_tools", text: translateUi(locale, "context_meter.compact_elapsed_tools", { elapsed: elapsedValue, count: totalToolCount }) },
       { key: "compaction", text: translateUi(locale, "context_meter.compact_auto_compact", { status: formatRuntimeToggle(locale, autoCompactionEnabled) }) },
     ],
     run: [
@@ -3237,7 +3327,7 @@ function buildRuntimeStatsSummary({
       { key: "network", label: translateUi(locale, "context_meter.field.network"), value: networkValue },
     ],
     tools: [
-      { key: "total", label: translateUi(locale, "context_meter.field.tool_total"), value: String(toolTimeline.length) },
+      { key: "total", label: translateUi(locale, "context_meter.field.tool_total"), value: String(totalToolCount) },
       { key: "succeeded", label: translateUi(locale, "context_meter.field.tool_succeeded"), value: String(succeeded) },
       { key: "failed", label: translateUi(locale, "context_meter.field.tool_failed"), value: String(failed) },
       { key: "rejected", label: translateUi(locale, "context_meter.field.tool_rejected"), value: String(rejected) },
@@ -4412,6 +4502,8 @@ function App() {
   const [selectedPresetModel, setSelectedPresetModel] = useState("");
   const [uiError, setUiError] = useState(null);
   const toolTimeline = appState.activeTurn.toolTimeline;
+  const liveToolCount = Math.max(0, Number(appState.activeTurn.toolCount || 0) || 0);
+  const toolEventIds = Array.isArray(appState.activeTurn.toolEventIds) ? appState.activeTurn.toolEventIds : [];
   const liveTurnState = appState.activeTurn.liveTurnState;
   const liveEvidence = appState.activeTurn.liveEvidence;
   const liveToolTimeline = appState.activeTurn.liveToolTimeline;
@@ -4611,6 +4703,8 @@ function App() {
     .join("|");
   const setLastResponse = (value) => dispatch({ type: "update", path: ["activeTurn", "lastResponse"], value });
   const setToolTimeline = (value) => dispatch({ type: "update", path: ["activeTurn", "toolTimeline"], value });
+  const setLiveToolCount = (value) => dispatch({ type: "update", path: ["activeTurn", "toolCount"], value });
+  const setToolEventIds = (value) => dispatch({ type: "update", path: ["activeTurn", "toolEventIds"], value });
   const setLiveTurnState = (value) => dispatch({ type: "update", path: ["activeTurn", "liveTurnState"], value });
   const setLiveEvidence = (value) => dispatch({ type: "update", path: ["activeTurn", "liveEvidence"], value });
   const setLiveToolTimeline = (value) => dispatch({ type: "update", path: ["activeTurn", "liveToolTimeline"], value });
@@ -6007,6 +6101,8 @@ function App() {
     setLastResponse(null);
     setToolTimeline([]);
     setLiveToolTimeline([]);
+    setLiveToolCount(0);
+    setToolEventIds([]);
     setLiveTurnState({});
     setLiveEvidence({});
     setLiveRunLogs([]);
@@ -6040,6 +6136,8 @@ function App() {
       lastResponse,
       toolTimeline,
       liveToolTimeline,
+      toolCount: liveToolCount,
+      toolEventIds,
       liveTurnState,
       liveEvidence,
       liveRunLogs,
@@ -6197,6 +6295,8 @@ function App() {
     setLastResponse(next.lastResponse);
     setToolTimeline(next.toolTimeline);
     setLiveToolTimeline(next.liveToolTimeline);
+    setLiveToolCount(next.toolCount);
+    setToolEventIds(next.toolEventIds);
     setLiveTurnState(next.liveTurnState);
     setLiveEvidence(next.liveEvidence);
     setLiveRunLogs(next.liveRunLogs);
@@ -7792,6 +7892,10 @@ function App() {
             ...((sessionRuntimeState.pending_approval && typeof sessionRuntimeState.pending_approval === "object") ? sessionRuntimeState.pending_approval : {}),
             ...((pendingResumeStateOption.pending_approval && typeof pendingResumeStateOption.pending_approval === "object") ? pendingResumeStateOption.pending_approval : {}),
           },
+          pending_turn: {
+            ...((sessionRuntimeState.pending_turn && typeof sessionRuntimeState.pending_turn === "object") ? sessionRuntimeState.pending_turn : {}),
+            ...((pendingResumeStateOption.pending_turn && typeof pendingResumeStateOption.pending_turn === "object") ? pendingResumeStateOption.pending_turn : {}),
+          },
         }
       : null;
     if (currentThreadBusy && !isTurnResume && !fromQueuedTurn) {
@@ -7856,6 +7960,24 @@ function App() {
     const logicalTurnStartedAtMs = isTurnResume
       ? (resumableTurnStartedAt(messages, sessionRuntimeState) || clientSubmittedAtMs)
       : clientSubmittedAtMs;
+    const resumePendingTurn = isTurnResume
+      && sessionRuntimeState.pending_turn
+      && typeof sessionRuntimeState.pending_turn === "object"
+      ? sessionRuntimeState.pending_turn
+      : {};
+    const resumeActiveTurnSnapshot = isTurnResume
+      ? normalizeThreadActiveTurn({
+          ...visibleThreadActiveTurnSnapshot(),
+          ...mergeRuntimeToolState(
+            visibleThreadActiveTurnSnapshot(),
+            resumePendingTurn.logical_tool_events,
+            {
+              minimumCount: resumePendingTurn.logical_tool_count,
+              toolEventIds: resumePendingTurn.logical_tool_event_ids,
+            },
+          ),
+        })
+      : createEmptyThreadActiveTurn();
     const uploadsInFlight = pendingUploads.some((item) => item && item.uploading);
     if (uploadsInFlight) {
       const summary = t("errors.upload_in_progress");
@@ -7869,15 +7991,19 @@ function App() {
 
     setContextMeterOpen(false);
     setStoppingRun(false);
-    setActiveRunId("");
+    if (!isTurnResume) setActiveRunId("");
     setActiveRunStartedAt(logicalTurnStartedAtMs);
     clearUiError();
-    setToolTimeline([]);
-    setLiveToolTimeline([]);
-    setLiveTurnState({});
-    setLiveEvidence({});
-    setLiveRunLogs([]);
-    setStageTimeline([]);
+    if (!isTurnResume) {
+      setToolTimeline([]);
+      setLiveToolTimeline([]);
+      setLiveToolCount(0);
+      setToolEventIds([]);
+      setLiveTurnState({});
+      setLiveEvidence({});
+      setLiveRunLogs([]);
+      setStageTimeline([]);
+    }
 
     let sid = targetSessionId;
     let pendingMessage = null;
@@ -7942,12 +8068,14 @@ function App() {
         },
       });
       const nextInitialRuntimeState = {
+        ...(isTurnResume ? sessionRuntimeState : {}),
         goal: isTurnResume ? String(sessionRuntimeState.goal || messageText) : messageText,
         permission_profile: normalizePermissionProfile(runSettings.permission_profile || "auto"),
         turn_status: "running",
         plan: isTurnResume && Array.isArray(sessionRuntimeState.plan) ? sessionRuntimeState.plan : [],
         pending_user_input: {},
         pending_approval: {},
+        pending_turn: {},
       };
       const initialLiveHeartbeat = normalizeLiveHeartbeat({
         status: "background_running",
@@ -7959,8 +8087,17 @@ function App() {
       });
       const initialActiveTurn = (existingActiveTurn) => {
         const existingTurn = normalizeThreadActiveTurn(existingActiveTurn);
+        const baseTurn = isTurnResume
+          ? normalizeThreadActiveTurn({
+              ...existingTurn,
+              ...mergeRuntimeToolState(existingTurn, resumePendingTurn.logical_tool_events, {
+                minimumCount: resumePendingTurn.logical_tool_count,
+                toolEventIds: resumePendingTurn.logical_tool_event_ids,
+              }),
+            })
+          : createEmptyThreadActiveTurn();
         return normalizeThreadActiveTurn({
-          ...createEmptyThreadActiveTurn(),
+          ...baseTurn,
           sending: true,
           activeRunThreadId: runOwnerThreadId,
           startedAt: logicalTurnStartedAtMs,
@@ -7968,13 +8105,13 @@ function App() {
           liveHeartbeat: initialLiveHeartbeat,
           lastResponse: existingTurn.lastResponse || lastResponse || null,
           liveTurnState: nextInitialRuntimeState,
-          liveEvidence: { status: "not_needed" },
+          liveEvidence: isTurnResume ? baseTurn.liveEvidence : { status: "not_needed" },
           pendingGuidance: existingTurn.pendingGuidance.filter(
             (item) => String(item.delivery || "") === "next_turn",
           ),
         });
       };
-      updateThreadSnapshot(runOwnerThreadId, (existing) => ({
+      const initializedOwnerSnapshot = updateThreadSnapshot(runOwnerThreadId, (existing) => ({
         ...existing,
         messages: appendMessagesOnceById(
           Array.isArray(existing.messages) && existing.messages.length
@@ -7991,10 +8128,10 @@ function App() {
             ? appendMessagesOnceById(prev, [userMessage, pendingMessage].filter(Boolean))
             : prev
         ));
-        setLiveTurnState(nextInitialRuntimeState);
-        setLiveEvidence({ status: "not_needed" });
-        setLastLiveProgressAt(clientSubmittedAtMs);
-        setLiveHeartbeat(initialLiveHeartbeat);
+        applyVisibleThreadActiveTurn(
+          (initializedOwnerSnapshot && initializedOwnerSnapshot.activeTurn)
+          || initialActiveTurn(resumeActiveTurnSnapshot),
+        );
       }
       if (overrideText == null) setDraft("");
 
@@ -8053,7 +8190,7 @@ function App() {
       let latestThreadId = String(sid || "");
       let latestRunSnapshot = {};
       let latestEvidenceState = { status: "not_needed" };
-      let latestToolEvents = [];
+      let latestToolEvents = isTurnResume ? resumeActiveTurnSnapshot.liveToolTimeline : [];
       let latestTokenUsage = {};
       let latestSessionTokenTotals = {};
       let latestGlobalTokenTotals = {};
@@ -8114,6 +8251,8 @@ function App() {
         setLastResponse(nextTurn.lastResponse);
         setToolTimeline(nextTurn.toolTimeline);
         setLiveToolTimeline(nextTurn.liveToolTimeline);
+        setLiveToolCount(nextTurn.toolCount);
+        setToolEventIds(nextTurn.toolEventIds);
         setLiveTurnState(nextTurn.liveTurnState);
         setLiveEvidence(nextTurn.liveEvidence);
         setLiveRunLogs(nextTurn.liveRunLogs);
@@ -8742,6 +8881,9 @@ function App() {
           startedAt: snapshotTurnStartedAt || prev.startedAt || logicalTurnStartedAtMs,
           lastLiveProgressAt: Date.now(),
           liveTurnState: mergeRunSnapshot(prev.liveTurnState || {}, snapshot),
+          toolCount: Object.prototype.hasOwnProperty.call(snapshot, "tool_count")
+            ? Math.max(Number(prev.toolCount || 0) || 0, Number(snapshot.tool_count || 0) || 0)
+            : prev.toolCount,
         }));
         if (Object.prototype.hasOwnProperty.call(snapshot, "evidence_status")) {
           latestEvidenceState = {
@@ -8782,12 +8924,8 @@ function App() {
       };
       const recordToolItem = (item) => {
         if (!item || typeof item !== "object") return;
-        latestToolEvents = [item, ...latestToolEvents.filter((entry) => String(entry.id || "") !== String(item.id || ""))].slice(0, RECENT_TOOL_TIMELINE_LIMIT);
-        updateOwnerActiveTurn((prev) => ({
-          ...prev,
-          toolTimeline: [item, ...(Array.isArray(prev.toolTimeline) ? prev.toolTimeline : []).filter((entry) => String(entry.id || "") !== String(item.id || ""))].slice(0, RECENT_TOOL_TIMELINE_LIMIT),
-          liveToolTimeline: [item, ...(Array.isArray(prev.liveToolTimeline) ? prev.liveToolTimeline : []).filter((entry) => String(entry.id || "") !== String(item.id || ""))].slice(0, RECENT_TOOL_TIMELINE_LIMIT),
-        }));
+        latestToolEvents = mergeRuntimeToolTimeline(latestToolEvents, [item]);
+        updateOwnerActiveTurn((prev) => ({ ...prev, ...mergeRuntimeToolState(prev, [item]) }));
         patchPendingActivity((activity) => mergeActivityState(activity, {
           tool_items: [item],
         }));
@@ -9381,8 +9519,25 @@ function App() {
         latestThreadId = String(finalPayload.thread_id || finalPayload.session_id || latestThreadId || "");
         if (latestThreadId && ownerThreadVisible()) setSessionId(latestThreadId);
       }
+      const finalRunState = ((finalPayload.inspector || {}).run_state) || {};
+      const finalLogicalToolEvents = Array.isArray(finalRunState.logical_tool_events)
+        ? finalRunState.logical_tool_events
+        : (Array.isArray(finalPayload.tool_events) ? finalPayload.tool_events : []);
+      const finalLogicalToolCount = Math.max(
+        0,
+        Number(finalRunState.logical_tool_count || 0) || 0,
+        Number(latestRunSnapshot.tool_count || 0) || 0,
+      );
+      const finalLogicalToolIds = Array.isArray(finalRunState.logical_tool_event_ids)
+        ? finalRunState.logical_tool_event_ids
+        : [];
+      latestToolEvents = mergeRuntimeToolTimeline(latestToolEvents, finalLogicalToolEvents);
       updateOwnerActiveTurn((prev) => ({
         ...prev,
+        ...mergeRuntimeToolState(prev, finalLogicalToolEvents, {
+          minimumCount: finalLogicalToolCount,
+          toolEventIds: finalLogicalToolIds,
+        }),
         lastResponse: finalPayload,
         liveTurnState: mergeRunSnapshot(prev.liveTurnState || {}, {
           ...(((finalPayload.inspector || {}).run_state) || {}),
@@ -9401,7 +9556,6 @@ function App() {
           ...latestEvidenceState,
           ...(((finalPayload.inspector || {}).evidence) || {}),
         },
-        liveToolTimeline: Array.isArray(finalPayload.tool_events) ? finalPayload.tool_events : latestToolEvents,
       }));
       if (latestThreadId) updateThreadStatus(latestThreadId, "idle");
       setHealth((prev) => (
@@ -9435,8 +9589,8 @@ function App() {
           last_run_id: String(finalPayload.run_id || ""),
           last_model: String(finalPayload.effective_model || ""),
           context_meter: finalPayload.context_meter || (((finalPayload.inspector || {}).run_state || {}).context_meter) || (((finalPayload.inspector || {}).session || {}).context_meter) || {},
-          tool_hits: Array.isArray(finalPayload.tool_events) ? finalPayload.tool_events : [],
-          tool_count: Array.isArray(finalPayload.tool_events) ? finalPayload.tool_events.length : 0,
+          tool_hits: latestToolEvents,
+          tool_count: Math.max(finalLogicalToolCount, latestToolEvents.length),
           evidence_status: String((((finalPayload.inspector || {}).evidence || {}).status) || "not_needed"),
           loaded_skills: Array.isArray((finalPayload.inspector || {}).loaded_skills) ? finalPayload.inspector.loaded_skills : sessionLoadedSkills,
           enabled_skill_ids: Array.isArray((finalPayload.inspector || {}).loaded_skills)
@@ -9447,11 +9601,11 @@ function App() {
       pushLogWithLimit(
         setLogs,
         "response",
-        t("log.reply_received", { count: Array.isArray(finalPayload.tool_events) ? finalPayload.tool_events.length : 0 }),
+        t("log.reply_received", { count: Math.max(finalLogicalToolCount, latestToolEvents.length) }),
       );
       pushLiveLog(
         "response",
-        t("log.reply_received", { count: Array.isArray(finalPayload.tool_events) ? finalPayload.tool_events.length : 0 }),
+        t("log.reply_received", { count: Math.max(finalLogicalToolCount, latestToolEvents.length) }),
       );
       const reconciledMessages = await reconcileCompletedThreadMessages(latestThreadId || runOwnerThreadId);
       if (!reconciledMessages) {
@@ -10345,6 +10499,7 @@ function App() {
     activityClockMs,
     hasLiveRuntimeState,
     liveToolTimeline,
+    liveToolCount,
     inspectorToolTimeline: lastInspector.tool_timeline,
     fallbackToolTimeline: toolTimeline,
     contextMeter: activeContextMeter,
@@ -10368,6 +10523,7 @@ function App() {
     activityClockMs,
     hasLiveRuntimeState,
     liveToolTimeline,
+    liveToolCount,
     lastInspector,
     toolTimeline,
     activeContextMeter,

@@ -403,7 +403,15 @@ class _PendingCommandApprovalRuntime(_FakeVintageRuntime):
                     },
                     "plan": [],
                 },
-                "tool_events": [],
+                "tool_events": [
+                    {
+                        "name": "exec_command",
+                        "raw_tool_call": {"id": "approval-tool-call", "name": "exec_command"},
+                        "output_preview": "approval required",
+                        "status": "blocked",
+                        "summary": summary,
+                    }
+                ],
                 "answer_bundle": {"summary": "", "claims": [], "citations": [], "warnings": []},
                 "transcript_delta": [
                     {
@@ -2821,6 +2829,9 @@ def test_command_approval_decision_resumes_same_turn_without_new_human_message(m
     assert float(
         first_payload["inspector"]["run_state"]["pending_turn"]["turn_started_at"]
     ) == original_started_at
+    assert first_payload["activity"]["tool_count"] == 1
+    assert first_payload["inspector"]["run_state"]["logical_tool_count"] == 1
+    assert pending_session["pending_interaction"]["turn"]["logical_tool_event_ids"] == ["approval-tool-call"]
 
     second = client.post(
         "/api/chat",
@@ -2846,6 +2857,8 @@ def test_command_approval_decision_resumes_same_turn_without_new_human_message(m
     second_payload = second.json()
     assert second_payload["turn_status"] == "completed"
     assert float(second_payload["activity"]["turn_started_at"]) == original_started_at
+    assert second_payload["activity"]["tool_count"] == 2
+    assert second_payload["inspector"]["run_state"]["logical_tool_count"] == 2
     session = main_app.session_store.load(session_id)
     assert session is not None
     assert [item["role"] for item in session["turns"]] == ["user", "assistant"]

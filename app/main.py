@@ -3146,6 +3146,59 @@ def _build_run_snapshot(
     return payload
 
 
+def _tool_event_identity(item: Any) -> str:
+    payload = dump_model(item) if not isinstance(item, dict) else dict(item)
+    raw_call = payload.get("raw_tool_call") if isinstance(payload.get("raw_tool_call"), dict) else {}
+    validation = payload.get("validation_result") if isinstance(payload.get("validation_result"), dict) else {}
+    return str(
+        payload.get("id")
+        or payload.get("tool_call_id")
+        or payload.get("call_id")
+        or raw_call.get("id")
+        or validation.get("call_id")
+        or ""
+    ).strip()
+
+
+def _logical_tool_state(
+    previous_pending_turn: dict[str, Any] | None,
+    current_events: list[Any] | None,
+) -> tuple[int, list[str], list[dict[str, Any]]]:
+    """Merge resume segments without making the bounded UI timeline the count."""
+
+    previous = dict(previous_pending_turn or {})
+    prior_events = [
+        dict(item)
+        for item in list(previous.get("logical_tool_events") or [])
+        if isinstance(item, dict)
+    ]
+    known_ids: list[str] = []
+    known = set()
+    for value in [
+        *list(previous.get("logical_tool_event_ids") or []),
+        *[_tool_event_identity(item) for item in prior_events],
+    ]:
+        identity = str(value or "").strip()
+        if identity and identity not in known:
+            known.add(identity)
+            known_ids.append(identity)
+    count = max(0, int(previous.get("logical_tool_count") or 0), len(known_ids))
+    recent = list(prior_events)
+    for event in list(current_events or []):
+        payload = dump_model(event) if not isinstance(event, dict) else dict(event)
+        identity = _tool_event_identity(payload)
+        if identity:
+            if identity not in known:
+                known.add(identity)
+                known_ids.append(identity)
+                count += 1
+            recent = [item for item in recent if _tool_event_identity(item) != identity]
+        else:
+            count += 1
+        recent.append(payload)
+    return count, known_ids, recent[-24:]
+
+
 def _migrate_legacy_pending_command_turn(session: dict[str, Any]) -> dict[str, Any]:
     """Convert the old approval placeholder into a resumable pending tool call."""
     legacy_agent_state = dict(session.get("agent_state") or {})
@@ -4284,12 +4337,19 @@ def _process_chat_request(
             if isinstance(runtime_result.get("pending_turn"), dict)
             else {}
         )
+        logical_tool_count, logical_tool_event_ids, logical_tool_events = _logical_tool_state(
+            pending_turn_for_resume if is_turn_resume else {},
+            tool_events,
+        )
         if str(turn_status or "").strip().lower() in {"cancelled", "interrupted"}:
             pending_user_input = {}
             pending_approval = {}
             pending_turn = {}
         if pending_turn:
             pending_turn["turn_started_at"] = logical_turn_started_at
+            pending_turn["logical_tool_count"] = logical_tool_count
+            pending_turn["logical_tool_event_ids"] = list(logical_tool_event_ids)
+            pending_turn["logical_tool_events"] = [dict(item) for item in logical_tool_events]
         with request_phase_timer.measure("thread_title_generation_ms"):
             title_generation_result = _maybe_generate_auto_thread_title(
                 session,
@@ -4328,6 +4388,7 @@ def _process_chat_request(
             "request_too_large_recovery": dict(request_too_large_recovery),
             "turn_changes": turn_changes,
             "tool_boundary_clean": tool_boundary_clean if isinstance(tool_boundary_clean, bool) else None,
+            "tool_count": logical_tool_count,
         }
         activity = _activity_with_end_to_end_duration(activity, combined_phase_timings)
         activity["turn_started_at"] = logical_turn_started_at
@@ -4357,7 +4418,7 @@ def _process_chat_request(
                 plan=plan,
                 pending_user_input=pending_user_input,
                 pending_approval=pending_approval,
-                tool_count=len(tool_events),
+                tool_count=logical_tool_count,
                 evidence_status=str(((inspector.get("evidence") or {}) if isinstance(inspector.get("evidence"), dict) else {}).get("status") or "not_needed"),
                 context_meter=agent_run_done_context_meter,
                 compaction_status=agent_run_done_compaction_status,
@@ -4595,6 +4656,9 @@ def _process_chat_request(
             compaction_status[key] = value
         inspector_run_state["pending_approval"] = dict(inspector_run_state.get("pending_approval") or pending_approval)
         inspector_run_state["pending_turn"] = dict(pending_turn)
+        inspector_run_state["logical_tool_count"] = logical_tool_count
+        inspector_run_state["logical_tool_event_ids"] = list(logical_tool_event_ids)
+        inspector_run_state["logical_tool_events"] = [dict(item) for item in logical_tool_events]
         for legacy_key in (
             "thread_memory", "recent_tasks", "artifact_memory_preview", "current_turn",
             "active_task_focus", "recent_user_messages", "current_task_focus",
@@ -4609,6 +4673,9 @@ def _process_chat_request(
         inspector_run_state["final_answer"] = final_answer
         inspector_run_state["runtime_error"] = dict(runtime_error)
         inspector["run_state"] = inspector_run_state
+        inspector_evidence["tool_count"] = logical_tool_count
+        inspector["evidence"] = inspector_evidence
+        inspector["logical_tool_events"] = [dict(item) for item in logical_tool_events]
         for legacy_key in (
             "thread_memory", "recent_tasks", "artifact_memory_preview", "current_turn",
             "active_task_focus", "recent_user_messages", "current_task_focus",
@@ -4664,7 +4731,7 @@ def _process_chat_request(
                 plan=plan,
                 pending_user_input=pending_user_input,
                 pending_approval=pending_approval,
-                tool_count=len(tool_events),
+                tool_count=logical_tool_count,
                 evidence_status=str(inspector_evidence.get("status") or "not_needed"),
                 context_meter=context_meter,
                 compaction_status=compaction_status,
@@ -4789,7 +4856,7 @@ def _process_chat_request(
                 plan=plan,
                 pending_user_input=pending_user_input,
                 pending_approval=pending_approval,
-                tool_count=len(tool_events),
+                tool_count=logical_tool_count,
                 evidence_status=str(inspector_evidence.get("status") or "not_needed"),
                 context_meter=context_meter,
                 compaction_status=compaction_status,
@@ -4816,7 +4883,7 @@ def _process_chat_request(
                 plan=plan,
                 pending_user_input=pending_user_input,
                 pending_approval=pending_approval,
-                tool_count=len(tool_events),
+                tool_count=logical_tool_count,
                 evidence_status=str(inspector_evidence.get("status") or "not_needed"),
                 context_meter=context_meter,
                 compaction_status=compaction_status,
@@ -4841,7 +4908,7 @@ def _process_chat_request(
                 plan=plan,
                 pending_user_input=pending_user_input,
                 pending_approval=pending_approval,
-                tool_count=len(tool_events),
+                tool_count=logical_tool_count,
                 evidence_status=str(inspector_evidence.get("status") or "not_needed"),
                 context_meter=context_meter,
                 compaction_status=compaction_status,
