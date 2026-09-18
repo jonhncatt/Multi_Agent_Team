@@ -1491,6 +1491,16 @@ def test_frontend_uses_large_context_default_max_output_tokens_and_server_bootst
     assert "setChatSettings((prev) =>" in script
 
 
+def test_static_content_hides_caret_without_disabling_real_editors() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+    styles = STYLES_CSS_PATH.read_text(encoding="utf-8")
+
+    assert "body {\n  min-height: 100vh;\n  caret-color: transparent;\n}" in styles
+    assert 'input,\ntextarea,\n[contenteditable]:not([contenteditable="false"])' in styles
+    assert "caret-color: auto;" in styles
+    assert 'FORBID_ATTR: ["style", "contenteditable", "onerror", "onload", "onclick"]' in script
+
+
 def test_reasoning_effort_slider_is_wired_into_the_composer_and_locked_by_model() -> None:
     script = APP_JS_PATH.read_text(encoding="utf-8")
     locales = LOCALES_JS_PATH.read_text(encoding="utf-8")

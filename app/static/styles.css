@@ -42,6 +42,13 @@ body {
 
 body {
   min-height: 100vh;
+  caret-color: transparent;
+}
+
+input,
+textarea,
+[contenteditable]:not([contenteditable="false"]) {
+  caret-color: auto;
 }
 
 #root {

@@ -719,7 +719,7 @@ function renderMessageHtml(text, messageId = "") {
     htmlValue = DOMPurifyRuntime.sanitize(rendered, {
       USE_PROFILES: { html: true },
       FORBID_TAGS: ["script", "style", "iframe", "object", "embed", "form", "input", "button", "textarea", "select"],
-      FORBID_ATTR: ["style", "onerror", "onload", "onclick"],
+      FORBID_ATTR: ["style", "contenteditable", "onerror", "onload", "onclick"],
     });
     const template = document.createElement("template");
     template.innerHTML = htmlValue;
