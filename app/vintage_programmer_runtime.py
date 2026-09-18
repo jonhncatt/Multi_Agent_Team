@@ -55,6 +55,7 @@ from app.models import (
     ProgressSignal,
     ToolEvent,
 )
+from app.model_capabilities import supports_reasoning_effort
 from app.openai_auth import OpenAIAuthManager
 from app.phase_timing import PhaseTimer
 from app.runtime_boundary import RuntimeBoundary, build_turn_runtime_boundary
@@ -4650,7 +4651,7 @@ class VintageProgrammerRuntime:
         )
         if selected_reasoning_effort not in {"none", "low", "medium", "high", "xhigh", "max"}:
             selected_reasoning_effort = ""
-        if not re.search(r"(?:^|[/:])gpt-5\.6(?:[-.:]|$)", requested_model, flags=re.IGNORECASE):
+        if not supports_reasoning_effort(requested_model):
             selected_reasoning_effort = ""
         selected_tools = list(spec.allowed_tools if settings.enable_tools else ())
         if subagent_spec_payload and settings.enable_tools:

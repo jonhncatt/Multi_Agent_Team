@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import openai
+import pytest
 
 from app.vp_runtime_backend import VPRuntimeBackend
 
@@ -53,7 +54,8 @@ class _RunnerWithSharedClient(_BlockingRunner):
         self.root_client = shared_client
 
 
-def test_build_llm_forwards_explicit_reasoning_effort() -> None:
+@pytest.mark.parametrize("model", ["gpt-5.6-sol", "company/gpt-6-astra"])
+def test_build_llm_forwards_explicit_reasoning_effort(model: str) -> None:
     captured: dict[str, Any] = {}
     backend = object.__new__(VPRuntimeBackend)
     backend.config = SimpleNamespace(
@@ -71,7 +73,7 @@ def test_build_llm_forwards_explicit_reasoning_effort() -> None:
     backend._chat_openai_cls = lambda: fake_chat_openai
     backend._build_llm_direct_fallback(
         auth=SimpleNamespace(api_key="test-key"),
-        model="gpt-5.6-sol",
+        model=model,
         max_output_tokens=1024,
         reasoning_effort="xhigh",
     )
@@ -79,7 +81,7 @@ def test_build_llm_forwards_explicit_reasoning_effort() -> None:
     assert captured["reasoning_effort"] == "xhigh"
 
 
-def test_build_llm_omits_reasoning_effort_for_non_gpt_56_models() -> None:
+def test_build_llm_omits_reasoning_effort_for_unsupported_models() -> None:
     captured: dict[str, Any] = {}
     backend = object.__new__(VPRuntimeBackend)
     backend.config = SimpleNamespace(
