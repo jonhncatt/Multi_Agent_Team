@@ -398,7 +398,7 @@ def test_index_cache_busts_frontend_static_bundle_with_app_version() -> None:
     app_version = version_match.group(1)
     index = INDEX_HTML_PATH.read_text(encoding="utf-8")
 
-    assert app_version == "3.1.6C"
+    assert app_version == "3.1.6C1"
     assert f'/static/app.js?v={app_version}' in index
     assert f'/static/locales.js?v={app_version}' in index
     assert f'/static/styles.css?v={app_version}' in index
@@ -1501,9 +1501,10 @@ def test_reasoning_effort_slider_is_wired_into_the_composer_and_locked_by_model(
     assert "reasoning-effort-panel ${reasoningEffortSupported" in script
     assert "supportsReasoningEffort(chatSettings.model)" in script
     assert "supportsPriorityMode(chatSettings.model)" in script
+    assert "function supportsReasoningEffort(model)" in script
     assert '/(?:^|[/:])gpt-6-astra(?:[-.:]|$)/i.test(normalized)' in script
     assert 'className="reasoning-effort-model-select"' in script
-    assert "Select a GPT-5.6 model to unlock reasoning effort." in script
+    assert "Select a GPT-5.6 or GPT-6 Astra model to unlock reasoning effort." in script
     assert "disabled=${!reasoningEffortSupported}" in script
     assert "reasoning_effort: nextValue" in script
     assert 'const REASONING_EFFORT_STORAGE_KEY = "vintage_programmer.reasoning_effort";' in script

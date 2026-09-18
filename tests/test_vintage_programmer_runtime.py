@@ -947,7 +947,11 @@ def test_runtime_does_not_create_a_second_semantic_task_completion_state(tmp_pat
     assert "task_completion" not in result["inspector"]["run_state"]
 
 
-def test_runtime_only_forwards_reasoning_effort_to_gpt_56_models(tmp_path: Path) -> None:
+@pytest.mark.parametrize("supported_model", ["company/gpt-5.6-sol", "company/gpt-6-astra"])
+def test_runtime_only_forwards_reasoning_effort_to_supported_models(
+    tmp_path: Path,
+    supported_model: str,
+) -> None:
     agent_dir = tmp_path / "agents" / "vintage_programmer"
     _write_specs(agent_dir)
 
@@ -985,7 +989,7 @@ def test_runtime_only_forwards_reasoning_effort_to_gpt_56_models(tmp_path: Path)
     supported_runtime.run(
         message="say ok",
         settings=ChatSettings(
-            model="company/gpt-5.6-sol",
+            model=supported_model,
             reasoning_effort="xhigh",
             enable_tools=False,
         ),

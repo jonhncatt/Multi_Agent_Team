@@ -204,7 +204,10 @@ function normalizeReasoningEffort(raw) {
 
 function supportsReasoningEffort(model) {
   const normalized = String(model || "").trim();
-  return /(?:^|[/:])gpt-5\.6(?:[-.:]|$)/i.test(normalized);
+  return (
+    /(?:^|[/:])gpt-5\.6(?:[-.:]|$)/i.test(normalized)
+    || /(?:^|[/:])gpt-6-astra(?:[-.:]|$)/i.test(normalized)
+  );
 }
 
 function supportsPriorityMode(model) {
@@ -9838,7 +9841,7 @@ function App() {
   }%`;
   const selectedReasoningDescription = reasoningEffortSupported
     ? "Reasoning effort for the main Agent and Subagents."
-    : "Select a GPT-5.6 model to unlock reasoning effort.";
+    : "Select a GPT-5.6 or GPT-6 Astra model to unlock reasoning effort.";
   const selectedReasoningAriaLabel = `Reasoning effort: ${selectedReasoningLabel}. ${selectedReasoningDescription}`;
   const reasoningPanelModelOptions = dedupeStrings([
     String(chatSettings.model || "").trim(),

@@ -21,6 +21,7 @@ from app.local_tools import (
     WRITE_STDIN_DEFAULT_YIELD_MS,
     WRITE_STDIN_MAX_YIELD_MS,
 )
+from app.model_capabilities import supports_reasoning_effort
 from app.openai_auth import OpenAIAuthManager, normalize_model_for_auth_mode
 from app.runtime_errors import classify_llm_exception as classify_runtime_llm_exception
 from app.serialization import safe_model_dump
@@ -573,10 +574,7 @@ class VPRuntimeBackend:
         if self.config.openai_temperature is not None:
             kwargs["temperature"] = self.config.openai_temperature
         normalized_reasoning_effort = str(reasoning_effort or "").strip().lower()
-        reasoning_model_supported = bool(
-            re.search(r"(?:^|[/:])gpt-5\.6(?:[-.:]|$)", str(model or ""), flags=re.IGNORECASE)
-        )
-        if normalized_reasoning_effort and reasoning_model_supported:
+        if normalized_reasoning_effort and supports_reasoning_effort(model):
             kwargs["reasoning_effort"] = normalized_reasoning_effort
         if self.config.openai_base_url:
             kwargs["base_url"] = self._normalize_base_url(self.config.openai_base_url)
