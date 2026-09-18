@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.main import _logical_tool_state
+from app.main import _build_run_snapshot, _logical_tool_state
 
 
 def _event(call_id: str, status: str = "ok") -> dict:
@@ -40,3 +40,56 @@ def test_logical_tool_state_keeps_count_beyond_recent_timeline_limit() -> None:
     assert len(recent) == 24
     assert recent[0]["raw_tool_call"]["id"] == "call-6"
 
+
+def test_logical_tool_state_uses_call_id_for_typed_stream_items() -> None:
+    previous = {
+        "logical_tool_count": 1,
+        "logical_tool_event_ids": ["call-1"],
+        "logical_tool_events": [_event("call-1", "blocked")],
+    }
+    typed_item = {
+        "id": "run-2:tool:1:1:call-1",
+        "tool_call_id": "call-1",
+        "type": "commandExecution",
+        "tool": "exec_command",
+        "status": "completed",
+    }
+
+    count, ids, _ = _logical_tool_state(previous, [typed_item])
+
+    assert count == 1
+    assert ids == ["call-1"]
+
+
+def test_run_snapshot_optional_fields_have_patch_semantics() -> None:
+    partial = _build_run_snapshot(
+        goal="Continue",
+        turn_status="running",
+        cwd="/workspace",
+    )
+
+    assert partial == {
+        "goal": "Continue",
+        "turn_status": "running",
+        "cwd": "/workspace",
+    }
+
+    cleared = _build_run_snapshot(
+        goal="New turn",
+        turn_status="running",
+        cwd="/workspace",
+        plan=[],
+        pending_user_input={},
+        pending_approval={},
+        tool_count=0,
+        evidence_status="not_needed",
+        context_meter={},
+        compaction_status={},
+    )
+
+    assert cleared["plan"] == []
+    assert cleared["pending_user_input"] == {}
+    assert cleared["pending_approval"] == {}
+    assert cleared["tool_count"] == 0
+    assert cleared["context_meter"] == {}
+    assert cleared["compaction_status"] == {}

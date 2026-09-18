@@ -3019,6 +3019,11 @@ def _queued_cancelled_chat_response(
         turn_started_at=float(activity["turn_started_at"]),
         turn_status="cancelled",
         cwd=str(seed_session.get("cwd") or requested_project.get("root_path") or ""),
+        plan=[],
+        pending_user_input={},
+        pending_approval={},
+        tool_count=0,
+        evidence_status="not_needed",
         context_meter=context_meter,
     )
     _emit_agent_message_events(
@@ -3112,27 +3117,38 @@ def _build_run_snapshot(
     plan: list[dict[str, Any]] | None = None,
     pending_user_input: dict[str, Any] | None = None,
     pending_approval: dict[str, Any] | None = None,
-    tool_count: int = 0,
-    evidence_status: str = "not_needed",
+    tool_count: int | None = None,
+    evidence_status: str | None = None,
     context_meter: dict[str, Any] | None = None,
     compaction_status: dict[str, Any] | None = None,
     model_draft: str = "",
     final_answer: str = "",
     runtime_error: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    # Run snapshots are operational UI state, not a second task-memory model.
+    # Run snapshots are incremental operational UI state, not a second
+    # task-memory model. Optional fields use PATCH semantics: omission means
+    # "keep the current value", while an explicit empty value clears it.
     payload = {
         "goal": str(goal or "").strip(),
         "turn_status": str(turn_status or "running"),
         "cwd": str(cwd or "").strip(),
-        "plan": [dict(item) for item in list(plan or []) if isinstance(item, dict)][:12],
-        "pending_user_input": dict(pending_user_input or {}),
-        "pending_approval": dict(pending_approval or {}),
-        "tool_count": int(tool_count or 0),
-        "evidence_status": str(evidence_status or "not_needed"),
-        "context_meter": dict(context_meter or {}),
-        "compaction_status": dict(compaction_status or {}),
     }
+    if plan is not None:
+        payload["plan"] = [
+            dict(item) for item in list(plan) if isinstance(item, dict)
+        ][:12]
+    if pending_user_input is not None:
+        payload["pending_user_input"] = dict(pending_user_input)
+    if pending_approval is not None:
+        payload["pending_approval"] = dict(pending_approval)
+    if tool_count is not None:
+        payload["tool_count"] = max(0, int(tool_count or 0))
+    if evidence_status is not None:
+        payload["evidence_status"] = str(evidence_status or "not_needed")
+    if context_meter is not None:
+        payload["context_meter"] = dict(context_meter)
+    if compaction_status is not None:
+        payload["compaction_status"] = dict(compaction_status)
     if str(turn_id or "").strip():
         payload["turn_id"] = str(turn_id or "").strip()
     if float(turn_started_at or 0.0) > 0:
@@ -3151,11 +3167,12 @@ def _tool_event_identity(item: Any) -> str:
     raw_call = payload.get("raw_tool_call") if isinstance(payload.get("raw_tool_call"), dict) else {}
     validation = payload.get("validation_result") if isinstance(payload.get("validation_result"), dict) else {}
     return str(
-        payload.get("id")
-        or payload.get("tool_call_id")
+        payload.get("tool_call_id")
         or payload.get("call_id")
         or raw_call.get("id")
+        or raw_call.get("tool_call_id")
         or validation.get("call_id")
+        or payload.get("id")
         or ""
     ).strip()
 
@@ -3804,11 +3821,32 @@ def _process_chat_request(
                 int(session_ready_compaction_status.get("calculation_ms") or 0),
             )
             with request_phase_timer.measure("session_ready_snapshot_ms"):
+                session_ready_plan = (
+                    [
+                        dict(item)
+                        for item in list(pending_turn_for_resume.get("plan") or [])
+                        if isinstance(item, dict)
+                    ][:12]
+                    if is_turn_resume
+                    else []
+                )
+                session_ready_tool_count = (
+                    max(
+                        _nonnegative_int(pending_turn_for_resume.get("logical_tool_count")),
+                        len(list(pending_turn_for_resume.get("logical_tool_event_ids") or [])),
+                    )
+                    if is_turn_resume
+                    else 0
+                )
                 session_ready_snapshot = _build_run_snapshot(
                     goal=runtime_request_message,
                     turn_started_at=logical_turn_started_at,
                     turn_status="running",
                     cwd=str(session.get("cwd") or session_project.get("root_path") or ""),
+                    plan=session_ready_plan,
+                    pending_user_input={},
+                    pending_approval={},
+                    tool_count=session_ready_tool_count,
                     context_meter=session_ready_context_meter,
                     compaction_status=session_ready_compaction_status,
                 )
@@ -4237,6 +4275,37 @@ def _process_chat_request(
             session_store.save(session)
             return True
 
+        runtime_progress_cb = progress_cb
+        if is_turn_resume and progress_cb is not None:
+            resume_segment_tool_events: list[dict[str, Any]] = []
+
+            def forward_resume_progress(event_payload: dict[str, Any]) -> None:
+                payload = dict(event_payload or {})
+                event_name = str(payload.get("event") or "").strip()
+                item = payload.get("item")
+                if (
+                    event_name in {"item/completed", "tool"}
+                    and isinstance(item, dict)
+                    and str(item.get("tool") or item.get("name") or "").strip()
+                ):
+                    resume_segment_tool_events.append(dict(item))
+                logical_live_tool_count, _, _ = _logical_tool_state(
+                    pending_turn_for_resume,
+                    resume_segment_tool_events,
+                )
+                run_snapshot = payload.get("run_snapshot")
+                if isinstance(run_snapshot, dict):
+                    payload["run_snapshot"] = {
+                        **run_snapshot,
+                        "tool_count": max(
+                            logical_live_tool_count,
+                            _nonnegative_int(run_snapshot.get("tool_count")),
+                        ),
+                    }
+                progress_cb(payload)
+
+            runtime_progress_cb = forward_resume_progress
+
         with request_phase_timer.measure("runtime_run_ms"):
             runtime_result = provider_runtime.run(
                 message=runtime_request_message,
@@ -4291,7 +4360,7 @@ def _process_chat_request(
                         if isinstance(item, dict)
                     ],
                 },
-                progress_cb=progress_cb,
+                progress_cb=runtime_progress_cb,
             )
         request_too_large_recovery = (
             dict(runtime_result.get("request_too_large_recovery") or {})
