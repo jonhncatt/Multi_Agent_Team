@@ -1808,7 +1808,7 @@ def test_activity_merge_can_clear_model_draft_after_final_answer() -> None:
     script = APP_JS_PATH.read_text(encoding="utf-8")
 
     match = re.search(
-        r"function mergeActivityState\(previous, patch = \{\}\) \{(?P<body>.*?)\n}\n\nfunction buildLiveDisplayActivity",
+        r"function mergeActivityState\(previous, patch = \{\}\) \{(?P<body>.*?)\n}\n\nfunction buildPendingAssistantActivity",
         script,
         re.S,
     )
@@ -1825,7 +1825,7 @@ def test_resumed_live_activity_clears_terminal_timer_anchor() -> None:
     script = APP_JS_PATH.read_text(encoding="utf-8")
 
     merge_match = re.search(
-        r"function mergeActivityState\(previous, patch = \{\}\) \{(?P<body>.*?)\n}\n\nfunction buildLiveDisplayActivity",
+        r"function mergeActivityState\(previous, patch = \{\}\) \{(?P<body>.*?)\n}\n\nfunction buildPendingAssistantActivity",
         script,
         re.S,
     )

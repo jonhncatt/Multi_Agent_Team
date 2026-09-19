@@ -1129,22 +1129,75 @@ function normalizeActivityToolItems(raw) {
     .filter((item) => item.id);
 }
 
+function mergeActivityToolItem(previousItem, nextItem) {
+  const previous = previousItem && typeof previousItem === "object" ? previousItem : {};
+  const incoming = nextItem && typeof nextItem === "object" ? nextItem : {};
+  const merged = { ...previous, ...incoming };
+  const previousTransactionId = String(previous.transaction_id || previous.transactionId || "").trim();
+  const incomingTransactionId = String(incoming.transaction_id || incoming.transactionId || "").trim();
+  if (previousTransactionId && !incomingTransactionId) {
+    merged.id = previous.id;
+    merged.transaction_id = previousTransactionId;
+    if (!String(incoming.type || "").trim()) merged.type = previous.type;
+  }
+  return merged;
+}
+
 function mergeActivityToolItems(previousItems, nextItems) {
-  const order = [];
-  const map = new Map();
-  normalizeActivityToolItems(previousItems).forEach((item) => {
-    order.push(item.id);
-    map.set(item.id, item);
-  });
+  const result = normalizeActivityToolItems(previousItems);
+  const exactIndexes = new Map();
+  const protocolIndexes = new Map();
+  const rememberIndex = (item, index) => {
+    const exactId = String(item.id || "").trim();
+    if (exactId) exactIndexes.set(exactId, index);
+    const protocolId = runtimeToolIdentity(item);
+    if (!protocolId) return;
+    const indexes = protocolIndexes.get(protocolId) || [];
+    if (!indexes.includes(index)) indexes.push(index);
+    protocolIndexes.set(protocolId, indexes);
+  };
+  result.forEach(rememberIndex);
   normalizeActivityToolItems(nextItems).forEach((item) => {
-    if (!map.has(item.id)) order.push(item.id);
-    map.set(item.id, { ...(map.get(item.id) || {}), ...item });
+    let matchIndex = exactIndexes.get(item.id);
+    if (matchIndex == null) {
+      const protocolId = runtimeToolIdentity(item);
+      const candidates = protocolId ? (protocolIndexes.get(protocolId) || []) : [];
+      if (candidates.length === 1) {
+        [matchIndex] = candidates;
+      } else if (candidates.length > 1) {
+        const toolRound = Math.max(0, Number(item.tool_round || item.toolRound || 0) || 0);
+        const toolIndex = Math.max(0, Number(item.tool_index || item.toolIndex || 0) || 0);
+        const occurrence = Math.max(0, Number(item.tool_call_id_occurrence || 0) || 0);
+        matchIndex = candidates.find((index) => {
+          const candidate = result[index] || {};
+          return (
+            toolRound > 0
+            && toolIndex > 0
+            && Math.max(0, Number(candidate.tool_round || candidate.toolRound || 0) || 0) === toolRound
+            && Math.max(0, Number(candidate.tool_index || candidate.toolIndex || 0) || 0) === toolIndex
+          ) || (
+            occurrence > 0
+            && Math.max(0, Number(candidate.tool_call_id_occurrence || 0) || 0) === occurrence
+          );
+        });
+      }
+    }
+    if (matchIndex == null) {
+      matchIndex = result.length;
+      result.push(item);
+    } else {
+      result[matchIndex] = mergeActivityToolItem(result[matchIndex], item);
+    }
+    if (String((result[matchIndex] || {}).id || "").trim() === String(item.id || "").trim()) {
+      rememberIndex(item, matchIndex);
+    }
+    rememberIndex(result[matchIndex], matchIndex);
   });
   // Message activity is the durable per-Turn audit view.  Do not apply the
   // Runtime drawer's recent-item limit here: a completed Turn may legitimately
   // contain dozens of calls and the expanded Tool Execution menu must retain
   // every transaction.
-  return order.map((id) => map.get(id)).filter(Boolean);
+  return result.filter(Boolean);
 }
 
 function reconcileAuthoritativeActivityToolItems(previousItems, nextItems) {
@@ -3134,6 +3187,26 @@ function isThreadSnapshotBusy(threadId, snapshot) {
   );
 }
 
+function hasPendingRuntimeInteraction(runtimeState) {
+  const state = runtimeState && typeof runtimeState === "object" ? runtimeState : {};
+  const pendingTurn = state.pending_turn && typeof state.pending_turn === "object"
+    ? state.pending_turn
+    : {};
+  const pendingInput = state.pending_user_input && typeof state.pending_user_input === "object"
+    ? state.pending_user_input
+    : {};
+  const pendingApproval = state.pending_approval && typeof state.pending_approval === "object"
+    ? state.pending_approval
+    : {};
+  const pendingType = String(
+    pendingTurn.type || pendingApproval.type || pendingInput.type || "",
+  ).trim();
+  return Boolean(
+    ["command_execution", "task_update", "request_user_input"].includes(pendingType)
+    || String(state.turn_status || "").trim() === "needs_user_input"
+  );
+}
+
 function formatElapsedSeconds(totalSeconds, locale = "en") {
   const normalized = Math.max(0, Math.floor(Number(totalSeconds || 0) || 0));
   const hours = Math.floor(normalized / 3600);
@@ -3937,6 +4010,12 @@ function mergeActivityState(previous, patch = {}) {
           : mergeActivityToolItems(prev.tool_items, nextPatch.tool_items)
       )
     : prev.tool_items;
+  const nextToolCount = Math.max(
+    0,
+    Number(prev.tool_count || 0) || 0,
+    Number(nextPatch.tool_count || 0) || 0,
+    nextToolItems.length,
+  );
   const nextLiveItems = Object.prototype.hasOwnProperty.call(nextPatch, "live_items")
     ? (
         replaceExecutionDetails
@@ -4006,6 +4085,7 @@ function mergeActivityState(previous, patch = {}) {
       nextPatch.runtime_inspector && typeof nextPatch.runtime_inspector === "object"
         ? nextPatch.runtime_inspector
         : prev.runtime_inspector,
+    tool_count: nextToolCount,
     tool_boundary_clean:
       typeof nextPatch.tool_boundary_clean === "boolean"
         ? nextPatch.tool_boundary_clean
@@ -4017,6 +4097,94 @@ function mergeActivityState(previous, patch = {}) {
     live_items: nextLiveItems,
     trace_events: nextTraceEvents,
   };
+}
+
+function buildPendingAssistantActivity(options = {}) {
+  const isTurnResume = Boolean(options.isTurnResume);
+  const clientSubmittedAtMs = normalizeActivityTimestamp(options.clientSubmittedAtMs || 0);
+  const logicalTurnStartedAtMs = normalizeActivityTimestamp(
+    options.logicalTurnStartedAtMs || clientSubmittedAtMs || 0,
+  );
+  const runModelName = String(options.runModelName || "").trim();
+  if (!isTurnResume) {
+    return normalizeMessageActivity({
+      status: "background_running",
+      started_at: clientSubmittedAtMs,
+      turn_started_at: logicalTurnStartedAtMs,
+      live_model: runModelName,
+      plan: [],
+      tool_items: [],
+      tool_count: 0,
+      trace_events: [],
+    });
+  }
+
+  const messages = Array.isArray(options.messages) ? options.messages : [];
+  const previousMessage = messages
+    .slice()
+    .reverse()
+    .find((message) => (
+      message
+      && ["assistant", "runtime"].includes(String(message.role || ""))
+      && message.activity
+      && typeof message.activity === "object"
+    ));
+  const previousActivity = normalizeMessageActivity(
+    (previousMessage && previousMessage.activity) || {},
+  );
+  const sessionRuntimeState = options.sessionRuntimeState && typeof options.sessionRuntimeState === "object"
+    ? options.sessionRuntimeState
+    : {};
+  const resumePendingTurn = options.resumePendingTurn && typeof options.resumePendingTurn === "object"
+    ? options.resumePendingTurn
+    : {};
+  const resumeActiveTurn = options.resumeActiveTurn && typeof options.resumeActiveTurn === "object"
+    ? options.resumeActiveTurn
+    : {};
+  const resumeLiveTurnState = resumeActiveTurn.liveTurnState && typeof resumeActiveTurn.liveTurnState === "object"
+    ? resumeActiveTurn.liveTurnState
+    : {};
+  const planCandidates = [
+    resumePendingTurn.plan,
+    resumeLiveTurnState.plan,
+    sessionRuntimeState.plan,
+    previousActivity.plan,
+  ];
+  const resumePlan = planCandidates
+    .map((plan) => normalizePlanChecklist(plan))
+    .find((plan) => plan.length) || [];
+  let resumeToolItems = mergeActivityToolItems(
+    previousActivity.tool_items,
+    resumePendingTurn.logical_tool_events,
+  );
+  resumeToolItems = mergeActivityToolItems(resumeToolItems, resumeActiveTurn.toolTimeline);
+  resumeToolItems = mergeActivityToolItems(resumeToolItems, resumeActiveTurn.liveToolTimeline);
+  const resumeToolCount = Math.max(
+    previousActivity.tool_count,
+    resumeToolItems.length,
+    Number(resumePendingTurn.logical_tool_count || 0) || 0,
+    Number(resumeActiveTurn.toolCount || 0) || 0,
+  );
+  return normalizeMessageActivity({
+    ...previousActivity,
+    run_id: "",
+    status: "background_running",
+    summary: "",
+    started_at: clientSubmittedAtMs,
+    turn_started_at: logicalTurnStartedAtMs || previousActivity.turn_started_at,
+    finished_at: 0,
+    run_duration_ms: 0,
+    final_elapsed_ms: 0,
+    live_model_started: false,
+    live_model: runModelName || previousActivity.live_model,
+    model_draft: "",
+    final_answer: "",
+    runtime_error: {},
+    plan: resumePlan,
+    tool_items: resumeToolItems,
+    tool_count: resumeToolCount,
+    trace_events: previousActivity.trace_events,
+  });
 }
 
 function buildLiveDisplayActivity(activity, options = {}) {
@@ -4052,6 +4220,18 @@ function buildLiveDisplayActivity(activity, options = {}) {
     const traceType = String((trace && trace.type) || "").trim();
     return !["run.finished", "answer.done", "answer.finished"].includes(traceType);
   });
+  const liveTurnState = options.liveTurnState && typeof options.liveTurnState === "object"
+    ? options.liveTurnState
+    : {};
+  const hasLivePlan = Object.prototype.hasOwnProperty.call(liveTurnState, "plan")
+    && Array.isArray(liveTurnState.plan);
+  const displayPlan = hasLivePlan ? normalizePlanChecklist(liveTurnState.plan) : item.plan;
+  const displayToolItems = mergeActivityToolItems(item.tool_items, options.liveToolTimeline);
+  const displayToolCount = Math.max(
+    item.tool_count,
+    displayToolItems.length,
+    Number(options.liveToolCount || 0) || 0,
+  );
   return normalizeMessageActivity({
     ...item,
     status: displayStatus,
@@ -4061,6 +4241,9 @@ function buildLiveDisplayActivity(activity, options = {}) {
     final_elapsed_ms: displayStatusIsTerminal ? item.final_elapsed_ms : 0,
     live_model_started: Boolean(item.live_model_started || (heartbeatStatus === "waiting_model" && heartbeatSource === "model")),
     live_model: String(item.live_model || heartbeat.model || "").trim(),
+    plan: displayPlan,
+    tool_items: displayToolItems,
+    tool_count: displayToolCount,
     trace_events: filteredTraceEvents,
   });
 }
@@ -7137,9 +7320,16 @@ function App() {
       if (requestSeq !== activeThreadRequestSeqRef.current) return false;
       const existingSnapshot = threadDetailCacheRef.current.get(sid) || null;
       const existingActiveTurn = normalizeThreadActiveTurn((existingSnapshot && existingSnapshot.activeTurn) || {});
+      const preservePendingContinuity = Boolean(
+        existingSnapshot
+        && hasPendingRuntimeInteraction(existingSnapshot.sessionRuntimeState)
+        && hasPendingRuntimeInteraction(data.agent_state),
+      );
       const preserveLiveSnapshot = Boolean(
         existingSnapshot
         && (
+          preservePendingContinuity
+          ||
           isThreadSnapshotLive(sid, existingSnapshot)
           || isCurrentThreadLiveRun({
             sessionId: sid,
@@ -7961,9 +8151,10 @@ function App() {
       ? (resumableTurnStartedAt(messages, sessionRuntimeState) || clientSubmittedAtMs)
       : clientSubmittedAtMs;
     const resumePendingTurn = isTurnResume
-      && sessionRuntimeState.pending_turn
-      && typeof sessionRuntimeState.pending_turn === "object"
-      ? sessionRuntimeState.pending_turn
+      && resumePendingState
+      && resumePendingState.pending_turn
+      && typeof resumePendingState.pending_turn === "object"
+      ? resumePendingState.pending_turn
       : {};
     const resumeActiveTurnSnapshot = isTurnResume
       ? normalizeThreadActiveTurn({
@@ -8057,22 +8248,26 @@ function App() {
         (health && health.default_model) ||
         "",
       ).trim();
+      const pendingActivity = buildPendingAssistantActivity({
+        isTurnResume,
+        messages,
+        sessionRuntimeState,
+        resumePendingTurn,
+        resumeActiveTurn: resumeActiveTurnSnapshot,
+        clientSubmittedAtMs,
+        logicalTurnStartedAtMs,
+        runModelName,
+      });
       pendingMessage = createMessage("assistant", t("labels.processing"), {
         pending: true,
-        activity: {
-          status: "background_running",
-          started_at: clientSubmittedAtMs,
-          turn_started_at: logicalTurnStartedAtMs,
-          live_model: runModelName,
-          trace_events: [],
-        },
+        activity: pendingActivity,
       });
       const nextInitialRuntimeState = {
         ...(isTurnResume ? sessionRuntimeState : {}),
         goal: isTurnResume ? String(sessionRuntimeState.goal || messageText) : messageText,
         permission_profile: normalizePermissionProfile(runSettings.permission_profile || "auto"),
         turn_status: "running",
-        plan: isTurnResume && Array.isArray(sessionRuntimeState.plan) ? sessionRuntimeState.plan : [],
+        plan: isTurnResume ? pendingActivity.plan : [],
         pending_user_input: {},
         pending_approval: {},
         pending_turn: {},
@@ -10018,6 +10213,10 @@ function App() {
     (runState.pending_user_input && typeof runState.pending_user_input === "object")
       ? runState.pending_user_input
       : ((sessionRuntimeState.pending_user_input && typeof sessionRuntimeState.pending_user_input === "object") ? sessionRuntimeState.pending_user_input : {});
+  const activePendingTurn =
+    (runState.pending_turn && typeof runState.pending_turn === "object")
+      ? runState.pending_turn
+      : ((sessionRuntimeState.pending_turn && typeof sessionRuntimeState.pending_turn === "object") ? sessionRuntimeState.pending_turn : {});
   const activePendingApproval = (() => {
     // Hide only the approval currently being consumed. A later approval can
     // arrive before the resumed request finishes (for example while Subagents
@@ -10160,6 +10359,7 @@ function App() {
           turn_status: "needs_user_input",
           pending_user_input: activePendingInput,
           pending_approval: activePendingApproval,
+          pending_turn: activePendingTurn,
         },
       });
     } finally {
@@ -10192,6 +10392,7 @@ function App() {
           turn_status: "needs_user_input",
           pending_user_input: activePendingInput,
           pending_approval: activePendingApproval,
+          pending_turn: activePendingTurn,
         },
       });
     } finally {
@@ -10236,6 +10437,7 @@ function App() {
           turn_status: "needs_user_input",
           pending_user_input: activePendingInput,
           pending_approval: activePendingApproval,
+          pending_turn: activePendingTurn,
         },
       });
     } finally {
@@ -11363,6 +11565,8 @@ function App() {
           activeRunStartedAt,
           hasRunningActivity,
           liveTurnState,
+          liveToolTimeline,
+          liveToolCount,
           liveHeartbeat: activeLiveHeartbeat,
         })
       : activity;
@@ -11486,6 +11690,8 @@ function App() {
         activeRunStartedAt,
         hasRunningActivity,
         liveTurnState,
+        liveToolTimeline,
+        liveToolCount,
         liveHeartbeat: activeLiveHeartbeat,
       });
       return pendingAssistantFallbackState({ ...item, activity: displayActivity }, uiLocale, activityClockMs || Date.now()).text;
