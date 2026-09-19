@@ -953,10 +953,12 @@ def test_runtime_input_options_can_resume_the_pending_turn_directly() -> None:
     styles = STYLES_CSS_PATH.read_text(encoding="utf-8")
 
     assert "function runtimeInputSubmissionIdentity(threadId, value)" in script
+    assert "function formatRuntimeInputResponse(questions, selections)" in script
     assert "const handleRuntimeInputOption = async (question, option)" in script
     assert 'type: "request_user_input"' in script
     assert "tool_call_id: String(activePendingInput.tool_call_id" in script
     assert "const allQuestionsAnswered = pendingRuntimeQuestions.every" in script
+    assert "const response = formatRuntimeInputResponse(pendingRuntimeQuestions, nextSelections);" in script
     assert 'const displayStructuredUserInput = String(structuredUserInputResponse.type || "") === "request_user_input";' in script
     assert 'onClick=${() => handleRuntimeInputOption(item, option)}' in script
     assert 'className=${`runtime-input-option ${selected ? "is-selected" : ""}`}' in script

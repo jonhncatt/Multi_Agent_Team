@@ -3539,6 +3539,20 @@ function runtimeInputSubmissionIdentity(threadId, value) {
     : "";
 }
 
+function formatRuntimeInputResponse(questions, selections) {
+  const answers = selections && typeof selections === "object" ? selections : {};
+  return (Array.isArray(questions) ? questions : [])
+    .map((question) => {
+      const item = question && typeof question === "object" ? question : {};
+      const questionId = String(item.id || item.header || item.question || "").trim();
+      const questionLabel = String(item.header || item.question || item.id || "").trim();
+      const answer = String(answers[questionId] || "").trim();
+      return questionLabel && answer ? `${questionLabel}: ${answer}` : "";
+    })
+    .filter(Boolean)
+    .join("\n");
+}
+
 function clearCommandExecutionApprovalState(value) {
   const state = value && typeof value === "object" ? value : {};
   const next = { ...state };
@@ -10418,13 +10432,8 @@ function App() {
       return itemId && String(nextSelections[itemId] || "").trim();
     });
     if (!allQuestionsAnswered) return;
-    const response = pendingRuntimeQuestions.length === 1
-      ? optionLabel
-      : pendingRuntimeQuestions.map((item) => {
-          const itemId = String((item && (item.id || item.header || item.question)) || "").trim();
-          const itemLabel = String((item && (item.header || item.question || item.id)) || itemId).trim();
-          return `${itemLabel}: ${String(nextSelections[itemId] || "").trim()}`;
-        }).join("\n");
+    const response = formatRuntimeInputResponse(pendingRuntimeQuestions, nextSelections);
+    if (!response) return;
     const submissionKey = runtimeInputSubmissionKey;
     if (!claimRuntimeInputSubmission(submissionKey)) return;
     try {

@@ -99,6 +99,7 @@ def test_resume_message_activity_stays_continuous_through_live_projection() -> N
         "normalizePlanChecklistItem",
         "normalizePlanChecklist",
         "hasPendingRuntimeInteraction",
+        "formatRuntimeInputResponse",
         "runtimeToolIdentity",
         "toolCallIdentityFromSource",
         "normalizeActivityToolItem",
@@ -143,6 +144,23 @@ const plan = [
   {{ step: 'Choose', status: 'completed' }},
   {{ step: 'Continue', status: 'in_progress' }},
 ];
+assert.equal(
+  formatRuntimeInputResponse(
+    [{{ id: 'direction', header: '测试方向', question: '请选择测试方向' }}],
+    {{ direction: 'A' }},
+  ),
+  '测试方向: A',
+);
+assert.equal(
+  formatRuntimeInputResponse(
+    [
+      {{ id: 'direction', header: '测试方向' }},
+      {{ id: 'scope', header: '测试范围' }},
+    ],
+    {{ direction: 'A', scope: 'B' }},
+  ),
+  '测试方向: A\\n测试范围: B',
+);
 const streamTool = (index) => ({{
   id: `transaction-${{index}}`,
   transaction_id: `transaction-${{index}}`,
