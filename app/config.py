@@ -104,8 +104,8 @@ _LLM_PROVIDER_PRESETS: dict[str, dict[str, object]] = {
     },
     "openai_compatible": {
         "api_key_env": "VP_OPENAI_COMPAT_API_KEY",
-        "default_model": "gpt-5.4",
-        "model_options": ["gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano", "gpt-5.1", "gpt-5-mini", "gpt-4.1"],
+        "default_model": "gpt-5.6-luna",
+        "model_options": ["gpt-5.6-luna", "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano", "gpt-5.1", "gpt-5-mini", "gpt-4.1"],
         "base_url": "",
         "use_responses_api": False,
     },

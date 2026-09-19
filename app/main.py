@@ -154,7 +154,7 @@ workbench_store = WorkbenchStore(
     agent_dir=AGENT_DIR,
 )
 _BACKEND_STARTUP_TIMER.mark("workbench_initialized")
-APP_VERSION = "3.1.6C1"
+APP_VERSION = "3.1.7"
 DESKTOP_CONTROL_TOKEN_PATH = Path(__file__).resolve().parent / "data" / "runtime" / "desktop-control-token"
 DESKTOP_EXIT_GRACE_SEC = 5.0
 app_update_manager = AppUpdateManager(app_dir=Path(__file__).resolve().parent.parent)
@@ -3019,6 +3019,11 @@ def _queued_cancelled_chat_response(
         turn_started_at=float(activity["turn_started_at"]),
         turn_status="cancelled",
         cwd=str(seed_session.get("cwd") or requested_project.get("root_path") or ""),
+        plan=[],
+        pending_user_input={},
+        pending_approval={},
+        tool_count=0,
+        evidence_status="not_needed",
         context_meter=context_meter,
     )
     _emit_agent_message_events(
@@ -3112,27 +3117,38 @@ def _build_run_snapshot(
     plan: list[dict[str, Any]] | None = None,
     pending_user_input: dict[str, Any] | None = None,
     pending_approval: dict[str, Any] | None = None,
-    tool_count: int = 0,
-    evidence_status: str = "not_needed",
+    tool_count: int | None = None,
+    evidence_status: str | None = None,
     context_meter: dict[str, Any] | None = None,
     compaction_status: dict[str, Any] | None = None,
     model_draft: str = "",
     final_answer: str = "",
     runtime_error: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    # Run snapshots are operational UI state, not a second task-memory model.
+    # Run snapshots are incremental operational UI state, not a second
+    # task-memory model. Optional fields use PATCH semantics: omission means
+    # "keep the current value", while an explicit empty value clears it.
     payload = {
         "goal": str(goal or "").strip(),
         "turn_status": str(turn_status or "running"),
         "cwd": str(cwd or "").strip(),
-        "plan": [dict(item) for item in list(plan or []) if isinstance(item, dict)][:12],
-        "pending_user_input": dict(pending_user_input or {}),
-        "pending_approval": dict(pending_approval or {}),
-        "tool_count": int(tool_count or 0),
-        "evidence_status": str(evidence_status or "not_needed"),
-        "context_meter": dict(context_meter or {}),
-        "compaction_status": dict(compaction_status or {}),
     }
+    if plan is not None:
+        payload["plan"] = [
+            dict(item) for item in list(plan) if isinstance(item, dict)
+        ][:12]
+    if pending_user_input is not None:
+        payload["pending_user_input"] = dict(pending_user_input)
+    if pending_approval is not None:
+        payload["pending_approval"] = dict(pending_approval)
+    if tool_count is not None:
+        payload["tool_count"] = max(0, int(tool_count or 0))
+    if evidence_status is not None:
+        payload["evidence_status"] = str(evidence_status or "not_needed")
+    if context_meter is not None:
+        payload["context_meter"] = dict(context_meter)
+    if compaction_status is not None:
+        payload["compaction_status"] = dict(compaction_status)
     if str(turn_id or "").strip():
         payload["turn_id"] = str(turn_id or "").strip()
     if float(turn_started_at or 0.0) > 0:
@@ -3144,6 +3160,60 @@ def _build_run_snapshot(
     if isinstance(runtime_error, dict) and runtime_error:
         payload["runtime_error"] = dict(runtime_error)
     return payload
+
+
+def _tool_event_identity(item: Any) -> str:
+    payload = dump_model(item) if not isinstance(item, dict) else dict(item)
+    raw_call = payload.get("raw_tool_call") if isinstance(payload.get("raw_tool_call"), dict) else {}
+    validation = payload.get("validation_result") if isinstance(payload.get("validation_result"), dict) else {}
+    return str(
+        payload.get("tool_call_id")
+        or payload.get("call_id")
+        or raw_call.get("id")
+        or raw_call.get("tool_call_id")
+        or validation.get("call_id")
+        or payload.get("id")
+        or ""
+    ).strip()
+
+
+def _logical_tool_state(
+    previous_pending_turn: dict[str, Any] | None,
+    current_events: list[Any] | None,
+) -> tuple[int, list[str], list[dict[str, Any]]]:
+    """Merge resume segments without making the bounded UI timeline the count."""
+
+    previous = dict(previous_pending_turn or {})
+    prior_events = [
+        dict(item)
+        for item in list(previous.get("logical_tool_events") or [])
+        if isinstance(item, dict)
+    ]
+    known_ids: list[str] = []
+    known = set()
+    for value in [
+        *list(previous.get("logical_tool_event_ids") or []),
+        *[_tool_event_identity(item) for item in prior_events],
+    ]:
+        identity = str(value or "").strip()
+        if identity and identity not in known:
+            known.add(identity)
+            known_ids.append(identity)
+    count = max(0, int(previous.get("logical_tool_count") or 0), len(known_ids))
+    recent = list(prior_events)
+    for event in list(current_events or []):
+        payload = dump_model(event) if not isinstance(event, dict) else dict(event)
+        identity = _tool_event_identity(payload)
+        if identity:
+            if identity not in known:
+                known.add(identity)
+                known_ids.append(identity)
+                count += 1
+            recent = [item for item in recent if _tool_event_identity(item) != identity]
+        else:
+            count += 1
+        recent.append(payload)
+    return count, known_ids, recent[-24:]
 
 
 def _migrate_legacy_pending_command_turn(session: dict[str, Any]) -> dict[str, Any]:
@@ -3751,11 +3821,32 @@ def _process_chat_request(
                 int(session_ready_compaction_status.get("calculation_ms") or 0),
             )
             with request_phase_timer.measure("session_ready_snapshot_ms"):
+                session_ready_plan = (
+                    [
+                        dict(item)
+                        for item in list(pending_turn_for_resume.get("plan") or [])
+                        if isinstance(item, dict)
+                    ][:12]
+                    if is_turn_resume
+                    else []
+                )
+                session_ready_tool_count = (
+                    max(
+                        _nonnegative_int(pending_turn_for_resume.get("logical_tool_count")),
+                        len(list(pending_turn_for_resume.get("logical_tool_event_ids") or [])),
+                    )
+                    if is_turn_resume
+                    else 0
+                )
                 session_ready_snapshot = _build_run_snapshot(
                     goal=runtime_request_message,
                     turn_started_at=logical_turn_started_at,
                     turn_status="running",
                     cwd=str(session.get("cwd") or session_project.get("root_path") or ""),
+                    plan=session_ready_plan,
+                    pending_user_input={},
+                    pending_approval={},
+                    tool_count=session_ready_tool_count,
                     context_meter=session_ready_context_meter,
                     compaction_status=session_ready_compaction_status,
                 )
@@ -4184,6 +4275,37 @@ def _process_chat_request(
             session_store.save(session)
             return True
 
+        runtime_progress_cb = progress_cb
+        if is_turn_resume and progress_cb is not None:
+            resume_segment_tool_events: list[dict[str, Any]] = []
+
+            def forward_resume_progress(event_payload: dict[str, Any]) -> None:
+                payload = dict(event_payload or {})
+                event_name = str(payload.get("event") or "").strip()
+                item = payload.get("item")
+                if (
+                    event_name in {"item/completed", "tool"}
+                    and isinstance(item, dict)
+                    and str(item.get("tool") or item.get("name") or "").strip()
+                ):
+                    resume_segment_tool_events.append(dict(item))
+                logical_live_tool_count, _, _ = _logical_tool_state(
+                    pending_turn_for_resume,
+                    resume_segment_tool_events,
+                )
+                run_snapshot = payload.get("run_snapshot")
+                if isinstance(run_snapshot, dict):
+                    payload["run_snapshot"] = {
+                        **run_snapshot,
+                        "tool_count": max(
+                            logical_live_tool_count,
+                            _nonnegative_int(run_snapshot.get("tool_count")),
+                        ),
+                    }
+                progress_cb(payload)
+
+            runtime_progress_cb = forward_resume_progress
+
         with request_phase_timer.measure("runtime_run_ms"):
             runtime_result = provider_runtime.run(
                 message=runtime_request_message,
@@ -4238,7 +4360,7 @@ def _process_chat_request(
                         if isinstance(item, dict)
                     ],
                 },
-                progress_cb=progress_cb,
+                progress_cb=runtime_progress_cb,
             )
         request_too_large_recovery = (
             dict(runtime_result.get("request_too_large_recovery") or {})
@@ -4284,12 +4406,19 @@ def _process_chat_request(
             if isinstance(runtime_result.get("pending_turn"), dict)
             else {}
         )
+        logical_tool_count, logical_tool_event_ids, logical_tool_events = _logical_tool_state(
+            pending_turn_for_resume if is_turn_resume else {},
+            tool_events,
+        )
         if str(turn_status or "").strip().lower() in {"cancelled", "interrupted"}:
             pending_user_input = {}
             pending_approval = {}
             pending_turn = {}
         if pending_turn:
             pending_turn["turn_started_at"] = logical_turn_started_at
+            pending_turn["logical_tool_count"] = logical_tool_count
+            pending_turn["logical_tool_event_ids"] = list(logical_tool_event_ids)
+            pending_turn["logical_tool_events"] = [dict(item) for item in logical_tool_events]
         with request_phase_timer.measure("thread_title_generation_ms"):
             title_generation_result = _maybe_generate_auto_thread_title(
                 session,
@@ -4328,6 +4457,7 @@ def _process_chat_request(
             "request_too_large_recovery": dict(request_too_large_recovery),
             "turn_changes": turn_changes,
             "tool_boundary_clean": tool_boundary_clean if isinstance(tool_boundary_clean, bool) else None,
+            "tool_count": logical_tool_count,
         }
         activity = _activity_with_end_to_end_duration(activity, combined_phase_timings)
         activity["turn_started_at"] = logical_turn_started_at
@@ -4357,7 +4487,7 @@ def _process_chat_request(
                 plan=plan,
                 pending_user_input=pending_user_input,
                 pending_approval=pending_approval,
-                tool_count=len(tool_events),
+                tool_count=logical_tool_count,
                 evidence_status=str(((inspector.get("evidence") or {}) if isinstance(inspector.get("evidence"), dict) else {}).get("status") or "not_needed"),
                 context_meter=agent_run_done_context_meter,
                 compaction_status=agent_run_done_compaction_status,
@@ -4595,6 +4725,9 @@ def _process_chat_request(
             compaction_status[key] = value
         inspector_run_state["pending_approval"] = dict(inspector_run_state.get("pending_approval") or pending_approval)
         inspector_run_state["pending_turn"] = dict(pending_turn)
+        inspector_run_state["logical_tool_count"] = logical_tool_count
+        inspector_run_state["logical_tool_event_ids"] = list(logical_tool_event_ids)
+        inspector_run_state["logical_tool_events"] = [dict(item) for item in logical_tool_events]
         for legacy_key in (
             "thread_memory", "recent_tasks", "artifact_memory_preview", "current_turn",
             "active_task_focus", "recent_user_messages", "current_task_focus",
@@ -4609,6 +4742,9 @@ def _process_chat_request(
         inspector_run_state["final_answer"] = final_answer
         inspector_run_state["runtime_error"] = dict(runtime_error)
         inspector["run_state"] = inspector_run_state
+        inspector_evidence["tool_count"] = logical_tool_count
+        inspector["evidence"] = inspector_evidence
+        inspector["logical_tool_events"] = [dict(item) for item in logical_tool_events]
         for legacy_key in (
             "thread_memory", "recent_tasks", "artifact_memory_preview", "current_turn",
             "active_task_focus", "recent_user_messages", "current_task_focus",
@@ -4664,7 +4800,7 @@ def _process_chat_request(
                 plan=plan,
                 pending_user_input=pending_user_input,
                 pending_approval=pending_approval,
-                tool_count=len(tool_events),
+                tool_count=logical_tool_count,
                 evidence_status=str(inspector_evidence.get("status") or "not_needed"),
                 context_meter=context_meter,
                 compaction_status=compaction_status,
@@ -4789,7 +4925,7 @@ def _process_chat_request(
                 plan=plan,
                 pending_user_input=pending_user_input,
                 pending_approval=pending_approval,
-                tool_count=len(tool_events),
+                tool_count=logical_tool_count,
                 evidence_status=str(inspector_evidence.get("status") or "not_needed"),
                 context_meter=context_meter,
                 compaction_status=compaction_status,
@@ -4816,7 +4952,7 @@ def _process_chat_request(
                 plan=plan,
                 pending_user_input=pending_user_input,
                 pending_approval=pending_approval,
-                tool_count=len(tool_events),
+                tool_count=logical_tool_count,
                 evidence_status=str(inspector_evidence.get("status") or "not_needed"),
                 context_meter=context_meter,
                 compaction_status=compaction_status,
@@ -4841,7 +4977,7 @@ def _process_chat_request(
                 plan=plan,
                 pending_user_input=pending_user_input,
                 pending_approval=pending_approval,
-                tool_count=len(tool_events),
+                tool_count=logical_tool_count,
                 evidence_status=str(inspector_evidence.get("status") or "not_needed"),
                 context_meter=context_meter,
                 compaction_status=compaction_status,

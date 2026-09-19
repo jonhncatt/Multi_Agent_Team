@@ -403,7 +403,15 @@ class _PendingCommandApprovalRuntime(_FakeVintageRuntime):
                     },
                     "plan": [],
                 },
-                "tool_events": [],
+                "tool_events": [
+                    {
+                        "name": "exec_command",
+                        "raw_tool_call": {"id": "approval-tool-call", "name": "exec_command"},
+                        "output_preview": "approval required",
+                        "status": "blocked",
+                        "summary": summary,
+                    }
+                ],
                 "answer_bundle": {"summary": "", "claims": [], "citations": [], "warnings": []},
                 "transcript_delta": [
                     {
@@ -613,6 +621,211 @@ class _ResumableRequestUserInputRuntime(_FakeVintageRuntime):
         inspector["run_state"] = run_state
         result["inspector"] = inspector
         return result
+
+
+class _ResumeSnapshotContinuityRuntime(_FakeVintageRuntime):
+    PLAN = [
+        {"step": "Inspect the current state", "status": "completed"},
+        {"step": "Ask for a decision", "status": "completed"},
+        {"step": "Apply the decision", "status": "in_progress"},
+    ]
+
+    def __init__(self, pending_type: str) -> None:
+        super().__init__()
+        self.pending_type = pending_type
+        self.pending_call_id = f"{pending_type}-pending-call"
+
+    def run(self, *, message, settings, context, progress_cb=None):
+        response = dict(context.get("user_input_response") or {})
+        result = super().run(
+            message=message,
+            settings=settings,
+            context=context,
+            progress_cb=progress_cb,
+        )
+        if str(response.get("type") or "") == self.pending_type:
+            persisted_tool_item = {
+                "role": "tool",
+                "content": json.dumps({"ok": True, "summary": "The decision was applied."}),
+                "tool_call_id": self.pending_call_id,
+                "name": self._pending_tool_name(),
+            }
+            persist = context.get("persist_resolved_pending_tool_result")
+            assert callable(persist)
+            assert persist(item=persisted_tool_item)
+            new_event = {
+                "name": "search_codebase",
+                "raw_tool_call": {"id": "resume-new-tool", "name": "search_codebase"},
+                "output_preview": "Found one match.",
+                "status": "ok",
+                "summary": "Searched after the decision.",
+            }
+            if progress_cb is not None:
+                progress_cb(
+                    {
+                        "event": "tool",
+                        "item": dict(new_event),
+                        "status": "ok",
+                        "summary": new_event["summary"],
+                        # The runtime reports this resume segment locally. The
+                        # API boundary must turn it into a logical-turn count.
+                        "run_snapshot": {
+                            "plan": [dict(item) for item in self.PLAN],
+                            "tool_count": 1,
+                            "turn_status": "running",
+                        },
+                    }
+                )
+            result.update(
+                {
+                    "text": "The pending decision was applied.",
+                    "final_answer": "The pending decision was applied.",
+                    "turn_status": "completed",
+                    "plan": [dict(item) for item in self.PLAN],
+                    "pending_user_input": {},
+                    "pending_approval": {},
+                    "pending_turn": {},
+                    "tool_events": [new_event],
+                    "transcript_delta": [persisted_tool_item],
+                }
+            )
+        else:
+            pending_input, pending_approval = self._pending_ui_state()
+            pending_turn = {
+                "schema_version": 1,
+                "type": self.pending_type,
+                "turn_id": str(context.get("logical_turn_id") or context.get("run_id") or "turn-resume"),
+                "request_message": str(message or ""),
+                "triggering_user_turn_id": str(context.get("triggering_user_turn_id") or ""),
+                "tool_call_id": self.pending_call_id,
+                "tool_call": {
+                    "id": self.pending_call_id,
+                    "name": self._pending_tool_name(),
+                    "args": self._pending_tool_arguments(),
+                },
+                "plan": [dict(item) for item in self.PLAN],
+            }
+            if self.pending_type == "task_update":
+                pending_turn["task_id"] = "task-resume-test"
+            prior_events = [
+                {
+                    "name": "read_file",
+                    "raw_tool_call": {"id": "prior-tool-1", "name": "read_file"},
+                    "output_preview": "Context loaded.",
+                    "status": "ok",
+                    "summary": "Read context.",
+                },
+                {
+                    "name": "search_codebase",
+                    "raw_tool_call": {"id": "prior-tool-2", "name": "search_codebase"},
+                    "output_preview": "Target found.",
+                    "status": "ok",
+                    "summary": "Found the target.",
+                },
+                {
+                    "name": self._pending_tool_name(),
+                    "raw_tool_call": {
+                        "id": self.pending_call_id,
+                        "name": self._pending_tool_name(),
+                    },
+                    "output_preview": "Waiting for a decision.",
+                    "status": "blocked",
+                    "summary": "Waiting for a decision.",
+                },
+            ]
+            result.update(
+                {
+                    "text": "Waiting for a decision.",
+                    "final_answer": "",
+                    "model_draft": "",
+                    "turn_status": "needs_user_input",
+                    "plan": [dict(item) for item in self.PLAN],
+                    "pending_user_input": pending_input,
+                    "pending_approval": pending_approval,
+                    "pending_turn": pending_turn,
+                    "tool_events": prior_events,
+                    "answer_bundle": {"summary": "", "claims": [], "citations": [], "warnings": []},
+                    "transcript_delta": [
+                        {
+                            "id": f"{self.pending_call_id}-model-call",
+                            "role": "assistant",
+                            "content": "",
+                            "tool_calls": [dict(pending_turn["tool_call"])],
+                        }
+                    ],
+                }
+            )
+        inspector = dict(result.get("inspector") or {})
+        run_state = dict(inspector.get("run_state") or {})
+        run_state.update(
+            {
+                "turn_status": result["turn_status"],
+                "plan": [dict(item) for item in result.get("plan") or []],
+                "pending_user_input": dict(result.get("pending_user_input") or {}),
+                "pending_approval": dict(result.get("pending_approval") or {}),
+                "pending_turn": dict(result.get("pending_turn") or {}),
+                "final_answer": str(result.get("final_answer") or ""),
+                "model_draft": str(result.get("model_draft") or ""),
+            }
+        )
+        inspector["run_state"] = run_state
+        result["inspector"] = inspector
+        return result
+
+    def _pending_tool_name(self) -> str:
+        return {
+            "command_execution": "exec_command",
+            "task_update": "save_task",
+            "request_user_input": "request_user_input",
+        }[self.pending_type]
+
+    def _pending_tool_arguments(self) -> dict[str, object]:
+        if self.pending_type == "command_execution":
+            return {"cmd": "git status --short"}
+        if self.pending_type == "task_update":
+            return {"task_id": "task-resume-test", "title": "Resume test"}
+        return {"questions": [{"id": "choice", "question": "Choose A or B"}]}
+
+    def _pending_ui_state(self) -> tuple[dict[str, object], dict[str, object]]:
+        if self.pending_type == "request_user_input":
+            return (
+                {
+                    "type": "request_user_input",
+                    "tool_call_id": self.pending_call_id,
+                    "summary": "Choose A or B.",
+                    "questions": [
+                        {
+                            "id": "choice",
+                            "header": "Choice",
+                            "question": "Choose A or B",
+                            "options": [{"label": "A"}, {"label": "B"}],
+                        }
+                    ],
+                },
+                {},
+            )
+        approval = {
+            "type": self.pending_type,
+            "tool_call_id": self.pending_call_id,
+            "approval_token": "resume-approval-token",
+        }
+        if self.pending_type == "command_execution":
+            approval["command"] = "git status --short"
+        else:
+            approval.update(
+                {
+                    "task_id": "task-resume-test",
+                    "proposed_task": {"id": "task-resume-test", "title": "Resume test"},
+                }
+            )
+        return (
+            {
+                "summary": "Review the pending change.",
+                "approval_request": dict(approval),
+                "questions": [],
+            },
+            approval,
+        )
 
 
 class _PersistThenFailApprovalRuntime(_PendingCommandApprovalRuntime):
@@ -2821,6 +3034,9 @@ def test_command_approval_decision_resumes_same_turn_without_new_human_message(m
     assert float(
         first_payload["inspector"]["run_state"]["pending_turn"]["turn_started_at"]
     ) == original_started_at
+    assert first_payload["activity"]["tool_count"] == 1
+    assert first_payload["inspector"]["run_state"]["logical_tool_count"] == 1
+    assert pending_session["pending_interaction"]["turn"]["logical_tool_event_ids"] == ["approval-tool-call"]
 
     second = client.post(
         "/api/chat",
@@ -2846,6 +3062,8 @@ def test_command_approval_decision_resumes_same_turn_without_new_human_message(m
     second_payload = second.json()
     assert second_payload["turn_status"] == "completed"
     assert float(second_payload["activity"]["turn_started_at"]) == original_started_at
+    assert second_payload["activity"]["tool_count"] == 2
+    assert second_payload["inspector"]["run_state"]["logical_tool_count"] == 2
     session = main_app.session_store.load(session_id)
     assert session is not None
     assert [item["role"] for item in session["turns"]] == ["user", "assistant"]
@@ -2922,6 +3140,143 @@ def test_request_user_input_choice_is_a_visible_user_message_but_not_a_second_mo
     assert transcript_items[3]["content"] == "Markdown"
     assert transcript_items[3]["ui_only"] is True
     assert session["pending_interaction"] == {}
+
+
+def test_all_resume_paths_keep_plan_and_logical_tool_count_through_bootstrap(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _patch_runtime_state(monkeypatch, tmp_path)
+    client = TestClient(main_app.app)
+    response_by_type = {
+        "command_execution": {
+            "type": "command_execution",
+            "action": "cancel",
+        },
+        "task_update": {
+            "type": "task_update",
+            "action": "cancel",
+            "task_id": "task-resume-test",
+        },
+        "request_user_input": {
+            "type": "request_user_input",
+            "response": "A",
+        },
+    }
+
+    for pending_type, response_payload in response_by_type.items():
+        runtime = _ResumeSnapshotContinuityRuntime(pending_type)
+        monkeypatch.setattr(main_app, "vintage_programmer_runtime", runtime)
+        first = client.post(
+            "/api/chat",
+            json={
+                "message": f"Prepare {pending_type} continuity.",
+                "settings": {
+                    "model": "gpt-test",
+                    "max_output_tokens": 1024,
+                    "max_context_turns": 20,
+                    "enable_tools": True,
+                    "response_style": "short",
+                },
+            },
+        )
+        assert first.status_code == 200, first.text
+        first_payload = first.json()
+        assert first_payload["turn_status"] == "needs_user_input"
+        assert first_payload["plan"] == runtime.PLAN
+        assert first_payload["activity"]["tool_count"] == 3
+        pending_session = main_app.session_store.load(first_payload["session_id"])
+        assert pending_session is not None
+        pending_turn = pending_session["pending_interaction"]["turn"]
+        assert pending_turn["plan"] == runtime.PLAN
+        assert pending_turn["logical_tool_count"] == 3
+
+        resume_response = {
+            **response_payload,
+            "tool_call_id": runtime.pending_call_id,
+        }
+        second = client.post(
+            "/api/chat/stream",
+            json={
+                "session_id": first_payload["session_id"],
+                "message": "A" if pending_type == "request_user_input" else "Cancel",
+                "user_input_response": resume_response,
+                "settings": {
+                    "model": "gpt-test",
+                    "max_output_tokens": 1024,
+                    "max_context_turns": 20,
+                    "enable_tools": True,
+                    "response_style": "short",
+                },
+            },
+        )
+
+        assert second.status_code == 200
+        events = _parse_sse_events(second.text)
+        session_ready = next(
+            payload
+            for name, payload in events
+            if name == "stage" and payload.get("code") == "session_ready"
+        )
+        ready_snapshot = dict(session_ready["run_snapshot"])
+        assert ready_snapshot["plan"] == runtime.PLAN
+        assert ready_snapshot["tool_count"] == 3
+        assert ready_snapshot["pending_user_input"] == {}
+        assert ready_snapshot["pending_approval"] == {}
+
+        first_tool_index = next(index for index, (name, _) in enumerate(events) if name == "tool")
+        for _, payload in events[:first_tool_index]:
+            snapshot = payload.get("run_snapshot")
+            if not isinstance(snapshot, dict):
+                continue
+            if "plan" in snapshot:
+                assert snapshot["plan"] == runtime.PLAN
+            if "tool_count" in snapshot:
+                assert snapshot["tool_count"] >= 3
+
+        first_new_tool = dict(events[first_tool_index][1])
+        assert first_new_tool["item"]["raw_tool_call"]["id"] == "resume-new-tool"
+        assert first_new_tool["run_snapshot"]["tool_count"] == 4
+        final_payload = dict(
+            next(payload for name, payload in events if name == "final")["response"]
+        )
+        assert final_payload["activity"]["tool_count"] == 4
+        assert final_payload["inspector"]["run_state"]["logical_tool_count"] == 4
+
+
+def test_normal_new_turn_session_ready_snapshot_explicitly_starts_empty(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _patch_runtime_state(monkeypatch, tmp_path)
+    client = TestClient(main_app.app)
+
+    response = client.post(
+        "/api/chat/stream",
+        json={
+            "message": "Start a fresh turn.",
+            "settings": {
+                "model": "gpt-test",
+                "max_output_tokens": 1024,
+                "max_context_turns": 20,
+                "enable_tools": True,
+                "response_style": "short",
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    events = _parse_sse_events(response.text)
+    session_ready = next(
+        payload
+        for name, payload in events
+        if name == "stage" and payload.get("code") == "session_ready"
+    )
+    snapshot = dict(session_ready["run_snapshot"])
+    assert snapshot["plan"] == []
+    assert snapshot["tool_count"] == 0
+    assert snapshot["pending_user_input"] == {}
+    assert snapshot["pending_approval"] == {}
 
 
 def test_late_subagent_result_waits_behind_pending_approval(monkeypatch, tmp_path: Path) -> None:

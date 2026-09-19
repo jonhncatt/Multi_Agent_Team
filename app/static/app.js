@@ -368,6 +368,8 @@ function createEmptyThreadActiveTurn() {
     lastResponse: null,
     toolTimeline: [],
     liveToolTimeline: [],
+    toolCount: 0,
+    toolEventIds: [],
     liveTurnState: {},
     liveEvidence: {},
     liveRunLogs: [],
@@ -402,6 +404,15 @@ function normalizeThreadActiveTurn(raw) {
     lastResponse: item.lastResponse && typeof item.lastResponse === "object" ? item.lastResponse : null,
     toolTimeline: Array.isArray(item.toolTimeline) ? item.toolTimeline : [],
     liveToolTimeline: Array.isArray(item.liveToolTimeline) ? item.liveToolTimeline : [],
+    toolCount: Math.max(
+      0,
+      Number(item.toolCount ?? item.tool_count ?? 0) || 0,
+      Array.isArray(item.toolTimeline) ? item.toolTimeline.length : 0,
+      Array.isArray(item.liveToolTimeline) ? item.liveToolTimeline.length : 0,
+    ),
+    toolEventIds: Array.isArray(item.toolEventIds || item.tool_event_ids)
+      ? (item.toolEventIds || item.tool_event_ids).map((value) => String(value || "").trim()).filter(Boolean)
+      : [],
     liveTurnState: item.liveTurnState && typeof item.liveTurnState === "object" ? item.liveTurnState : {},
     liveEvidence: item.liveEvidence && typeof item.liveEvidence === "object" ? item.liveEvidence : {},
     liveRunLogs: Array.isArray(item.liveRunLogs) ? item.liveRunLogs : [],
@@ -418,6 +429,81 @@ function normalizeThreadActiveTurn(raw) {
             queuedAt: normalizeActivityTimestamp(entry.queuedAt || entry.queued_at || 0),
           }))
       : [],
+  };
+}
+
+function runtimeToolIdentity(item) {
+  const entry = item && typeof item === "object" ? item : {};
+  const rawCall = entry.raw_tool_call && typeof entry.raw_tool_call === "object" ? entry.raw_tool_call : {};
+  const validation = entry.validation_result && typeof entry.validation_result === "object" ? entry.validation_result : {};
+  return String(
+    entry.tool_call_id || rawCall.id || validation.call_id || entry.call_id || entry.id || "",
+  ).trim();
+}
+
+function mergeRuntimeToolTimeline(previous, incoming) {
+  const result = [];
+  const seen = new Set();
+  const previousItems = Array.isArray(previous) ? previous : [];
+  const previousByIdentity = new Map();
+  for (const item of previousItems) {
+    const identity = runtimeToolIdentity(item);
+    if (identity && !previousByIdentity.has(identity)) previousByIdentity.set(identity, item);
+  }
+  const incomingNewestFirst = (Array.isArray(incoming) ? incoming : []).slice().reverse();
+  for (const item of [...incomingNewestFirst, ...previousItems]) {
+    if (!item || typeof item !== "object") continue;
+    const identity = runtimeToolIdentity(item);
+    if (identity && seen.has(identity)) continue;
+    if (identity) seen.add(identity);
+    result.push(identity && previousByIdentity.has(identity)
+      ? { ...previousByIdentity.get(identity), ...item }
+      : item);
+  }
+  return result.slice(0, RECENT_TOOL_TIMELINE_LIMIT);
+}
+
+function mergeRuntimeToolState(previous, incoming, options = {}) {
+  const prior = previous && typeof previous === "object" ? previous : {};
+  const incomingItems = Array.isArray(incoming) ? incoming.filter((item) => item && typeof item === "object") : [];
+  const knownIds = [];
+  const known = new Set();
+  for (const value of [
+    ...(Array.isArray(prior.toolEventIds) ? prior.toolEventIds : []),
+    ...(Array.isArray(options.toolEventIds) ? options.toolEventIds : []),
+  ]) {
+    const identity = String(value || "").trim();
+    if (!identity || known.has(identity)) continue;
+    known.add(identity);
+    knownIds.push(identity);
+  }
+  for (const item of [...(Array.isArray(prior.liveToolTimeline) ? prior.liveToolTimeline : []),
+    ...(Array.isArray(prior.toolTimeline) ? prior.toolTimeline : [])]) {
+    const identity = runtimeToolIdentity(item);
+    if (!identity || known.has(identity)) continue;
+    known.add(identity);
+    knownIds.push(identity);
+  }
+  let toolCount = Math.max(
+    0,
+    Number(prior.toolCount || 0) || 0,
+    knownIds.length,
+  );
+  for (const item of incomingItems) {
+    const identity = runtimeToolIdentity(item);
+    if (identity) {
+      if (known.has(identity)) continue;
+      known.add(identity);
+      knownIds.push(identity);
+    }
+    toolCount += 1;
+  }
+  toolCount = Math.max(toolCount, Number(options.minimumCount || 0) || 0);
+  return {
+    toolTimeline: mergeRuntimeToolTimeline(prior.toolTimeline, incomingItems),
+    liveToolTimeline: mergeRuntimeToolTimeline(prior.liveToolTimeline, incomingItems),
+    toolCount,
+    toolEventIds: knownIds,
   };
 }
 
@@ -1043,22 +1129,75 @@ function normalizeActivityToolItems(raw) {
     .filter((item) => item.id);
 }
 
+function mergeActivityToolItem(previousItem, nextItem) {
+  const previous = previousItem && typeof previousItem === "object" ? previousItem : {};
+  const incoming = nextItem && typeof nextItem === "object" ? nextItem : {};
+  const merged = { ...previous, ...incoming };
+  const previousTransactionId = String(previous.transaction_id || previous.transactionId || "").trim();
+  const incomingTransactionId = String(incoming.transaction_id || incoming.transactionId || "").trim();
+  if (previousTransactionId && !incomingTransactionId) {
+    merged.id = previous.id;
+    merged.transaction_id = previousTransactionId;
+    if (!String(incoming.type || "").trim()) merged.type = previous.type;
+  }
+  return merged;
+}
+
 function mergeActivityToolItems(previousItems, nextItems) {
-  const order = [];
-  const map = new Map();
-  normalizeActivityToolItems(previousItems).forEach((item) => {
-    order.push(item.id);
-    map.set(item.id, item);
-  });
+  const result = normalizeActivityToolItems(previousItems);
+  const exactIndexes = new Map();
+  const protocolIndexes = new Map();
+  const rememberIndex = (item, index) => {
+    const exactId = String(item.id || "").trim();
+    if (exactId) exactIndexes.set(exactId, index);
+    const protocolId = runtimeToolIdentity(item);
+    if (!protocolId) return;
+    const indexes = protocolIndexes.get(protocolId) || [];
+    if (!indexes.includes(index)) indexes.push(index);
+    protocolIndexes.set(protocolId, indexes);
+  };
+  result.forEach(rememberIndex);
   normalizeActivityToolItems(nextItems).forEach((item) => {
-    if (!map.has(item.id)) order.push(item.id);
-    map.set(item.id, { ...(map.get(item.id) || {}), ...item });
+    let matchIndex = exactIndexes.get(item.id);
+    if (matchIndex == null) {
+      const protocolId = runtimeToolIdentity(item);
+      const candidates = protocolId ? (protocolIndexes.get(protocolId) || []) : [];
+      if (candidates.length === 1) {
+        [matchIndex] = candidates;
+      } else if (candidates.length > 1) {
+        const toolRound = Math.max(0, Number(item.tool_round || item.toolRound || 0) || 0);
+        const toolIndex = Math.max(0, Number(item.tool_index || item.toolIndex || 0) || 0);
+        const occurrence = Math.max(0, Number(item.tool_call_id_occurrence || 0) || 0);
+        matchIndex = candidates.find((index) => {
+          const candidate = result[index] || {};
+          return (
+            toolRound > 0
+            && toolIndex > 0
+            && Math.max(0, Number(candidate.tool_round || candidate.toolRound || 0) || 0) === toolRound
+            && Math.max(0, Number(candidate.tool_index || candidate.toolIndex || 0) || 0) === toolIndex
+          ) || (
+            occurrence > 0
+            && Math.max(0, Number(candidate.tool_call_id_occurrence || 0) || 0) === occurrence
+          );
+        });
+      }
+    }
+    if (matchIndex == null) {
+      matchIndex = result.length;
+      result.push(item);
+    } else {
+      result[matchIndex] = mergeActivityToolItem(result[matchIndex], item);
+    }
+    if (String((result[matchIndex] || {}).id || "").trim() === String(item.id || "").trim()) {
+      rememberIndex(item, matchIndex);
+    }
+    rememberIndex(result[matchIndex], matchIndex);
   });
   // Message activity is the durable per-Turn audit view.  Do not apply the
   // Runtime drawer's recent-item limit here: a completed Turn may legitimately
   // contain dozens of calls and the expanded Tool Execution menu must retain
   // every transaction.
-  return order.map((id) => map.get(id)).filter(Boolean);
+  return result.filter(Boolean);
 }
 
 function reconcileAuthoritativeActivityToolItems(previousItems, nextItems) {
@@ -2071,7 +2210,7 @@ function formatToolProgressLabel(locale, group, options = {}) {
   const readTools = new Set(["read_file", "read_section", "image_read", "image_inspect", "table_extract"]);
   const listTools = new Set(["list_dir"]);
   const globTools = new Set(["glob_file_search"]);
-  const searchTools = new Set(["search_contents_in_file", "search_contents_in_file_multi", "search_codebase", "fact_check_file", "web_search", "web_fetch", "web_download"]);
+  const searchTools = new Set(["search_contents_in_file", "search_contents_in_file_multi", "search_codebase", "search_files", "fact_check_file", "web_search", "web_fetch", "web_download"]);
   const commandTools = new Set(["exec_command", "run_command", "shell", "bash"]);
   const patchTools = new Set(["apply_patch"]);
   let label = "";
@@ -3048,6 +3187,26 @@ function isThreadSnapshotBusy(threadId, snapshot) {
   );
 }
 
+function hasPendingRuntimeInteraction(runtimeState) {
+  const state = runtimeState && typeof runtimeState === "object" ? runtimeState : {};
+  const pendingTurn = state.pending_turn && typeof state.pending_turn === "object"
+    ? state.pending_turn
+    : {};
+  const pendingInput = state.pending_user_input && typeof state.pending_user_input === "object"
+    ? state.pending_user_input
+    : {};
+  const pendingApproval = state.pending_approval && typeof state.pending_approval === "object"
+    ? state.pending_approval
+    : {};
+  const pendingType = String(
+    pendingTurn.type || pendingApproval.type || pendingInput.type || "",
+  ).trim();
+  return Boolean(
+    ["command_execution", "task_update", "request_user_input"].includes(pendingType)
+    || String(state.turn_status || "").trim() === "needs_user_input"
+  );
+}
+
 function formatElapsedSeconds(totalSeconds, locale = "en") {
   const normalized = Math.max(0, Math.floor(Number(totalSeconds || 0) || 0));
   const hours = Math.floor(normalized / 3600);
@@ -3115,6 +3274,7 @@ function buildRuntimeStatsSummary({
   activityClockMs,
   hasLiveRuntimeState,
   liveToolTimeline,
+  liveToolCount = 0,
   inspectorToolTimeline,
   fallbackToolTimeline,
   contextMeter,
@@ -3150,6 +3310,9 @@ function buildRuntimeStatsSummary({
     inspectorToolTimeline,
     fallbackToolTimeline,
   });
+  const totalToolCount = hasLiveRuntimeState
+    ? Math.max(toolTimeline.length, Number(liveToolCount || 0) || 0)
+    : toolTimeline.length;
   let succeeded = 0;
   let failed = 0;
   let rejected = 0;
@@ -3221,7 +3384,7 @@ function buildRuntimeStatsSummary({
     compact: [
       { key: "usage", text: compactUsage },
       { key: "tokens", text: compactTokens },
-      { key: "elapsed_tools", text: translateUi(locale, "context_meter.compact_elapsed_tools", { elapsed: elapsedValue, count: toolTimeline.length }) },
+      { key: "elapsed_tools", text: translateUi(locale, "context_meter.compact_elapsed_tools", { elapsed: elapsedValue, count: totalToolCount }) },
       { key: "compaction", text: translateUi(locale, "context_meter.compact_auto_compact", { status: formatRuntimeToggle(locale, autoCompactionEnabled) }) },
     ],
     run: [
@@ -3237,7 +3400,7 @@ function buildRuntimeStatsSummary({
       { key: "network", label: translateUi(locale, "context_meter.field.network"), value: networkValue },
     ],
     tools: [
-      { key: "total", label: translateUi(locale, "context_meter.field.tool_total"), value: String(toolTimeline.length) },
+      { key: "total", label: translateUi(locale, "context_meter.field.tool_total"), value: String(totalToolCount) },
       { key: "succeeded", label: translateUi(locale, "context_meter.field.tool_succeeded"), value: String(succeeded) },
       { key: "failed", label: translateUi(locale, "context_meter.field.tool_failed"), value: String(failed) },
       { key: "rejected", label: translateUi(locale, "context_meter.field.tool_rejected"), value: String(rejected) },
@@ -3374,6 +3537,20 @@ function runtimeInputSubmissionIdentity(threadId, value) {
   return normalizedThreadId && (toolCallId || questionIds)
     ? `${normalizedThreadId}::${inputIdentity}`
     : "";
+}
+
+function formatRuntimeInputResponse(questions, selections) {
+  const answers = selections && typeof selections === "object" ? selections : {};
+  return (Array.isArray(questions) ? questions : [])
+    .map((question) => {
+      const item = question && typeof question === "object" ? question : {};
+      const questionId = String(item.id || item.header || item.question || "").trim();
+      const questionLabel = String(item.header || item.question || item.id || "").trim();
+      const answer = String(answers[questionId] || "").trim();
+      return questionLabel && answer ? `${questionLabel}: ${answer}` : "";
+    })
+    .filter(Boolean)
+    .join("\n");
 }
 
 function clearCommandExecutionApprovalState(value) {
@@ -3847,6 +4024,12 @@ function mergeActivityState(previous, patch = {}) {
           : mergeActivityToolItems(prev.tool_items, nextPatch.tool_items)
       )
     : prev.tool_items;
+  const nextToolCount = Math.max(
+    0,
+    Number(prev.tool_count || 0) || 0,
+    Number(nextPatch.tool_count || 0) || 0,
+    nextToolItems.length,
+  );
   const nextLiveItems = Object.prototype.hasOwnProperty.call(nextPatch, "live_items")
     ? (
         replaceExecutionDetails
@@ -3916,6 +4099,7 @@ function mergeActivityState(previous, patch = {}) {
       nextPatch.runtime_inspector && typeof nextPatch.runtime_inspector === "object"
         ? nextPatch.runtime_inspector
         : prev.runtime_inspector,
+    tool_count: nextToolCount,
     tool_boundary_clean:
       typeof nextPatch.tool_boundary_clean === "boolean"
         ? nextPatch.tool_boundary_clean
@@ -3927,6 +4111,94 @@ function mergeActivityState(previous, patch = {}) {
     live_items: nextLiveItems,
     trace_events: nextTraceEvents,
   };
+}
+
+function buildPendingAssistantActivity(options = {}) {
+  const isTurnResume = Boolean(options.isTurnResume);
+  const clientSubmittedAtMs = normalizeActivityTimestamp(options.clientSubmittedAtMs || 0);
+  const logicalTurnStartedAtMs = normalizeActivityTimestamp(
+    options.logicalTurnStartedAtMs || clientSubmittedAtMs || 0,
+  );
+  const runModelName = String(options.runModelName || "").trim();
+  if (!isTurnResume) {
+    return normalizeMessageActivity({
+      status: "background_running",
+      started_at: clientSubmittedAtMs,
+      turn_started_at: logicalTurnStartedAtMs,
+      live_model: runModelName,
+      plan: [],
+      tool_items: [],
+      tool_count: 0,
+      trace_events: [],
+    });
+  }
+
+  const messages = Array.isArray(options.messages) ? options.messages : [];
+  const previousMessage = messages
+    .slice()
+    .reverse()
+    .find((message) => (
+      message
+      && ["assistant", "runtime"].includes(String(message.role || ""))
+      && message.activity
+      && typeof message.activity === "object"
+    ));
+  const previousActivity = normalizeMessageActivity(
+    (previousMessage && previousMessage.activity) || {},
+  );
+  const sessionRuntimeState = options.sessionRuntimeState && typeof options.sessionRuntimeState === "object"
+    ? options.sessionRuntimeState
+    : {};
+  const resumePendingTurn = options.resumePendingTurn && typeof options.resumePendingTurn === "object"
+    ? options.resumePendingTurn
+    : {};
+  const resumeActiveTurn = options.resumeActiveTurn && typeof options.resumeActiveTurn === "object"
+    ? options.resumeActiveTurn
+    : {};
+  const resumeLiveTurnState = resumeActiveTurn.liveTurnState && typeof resumeActiveTurn.liveTurnState === "object"
+    ? resumeActiveTurn.liveTurnState
+    : {};
+  const planCandidates = [
+    resumePendingTurn.plan,
+    resumeLiveTurnState.plan,
+    sessionRuntimeState.plan,
+    previousActivity.plan,
+  ];
+  const resumePlan = planCandidates
+    .map((plan) => normalizePlanChecklist(plan))
+    .find((plan) => plan.length) || [];
+  let resumeToolItems = mergeActivityToolItems(
+    previousActivity.tool_items,
+    resumePendingTurn.logical_tool_events,
+  );
+  resumeToolItems = mergeActivityToolItems(resumeToolItems, resumeActiveTurn.toolTimeline);
+  resumeToolItems = mergeActivityToolItems(resumeToolItems, resumeActiveTurn.liveToolTimeline);
+  const resumeToolCount = Math.max(
+    previousActivity.tool_count,
+    resumeToolItems.length,
+    Number(resumePendingTurn.logical_tool_count || 0) || 0,
+    Number(resumeActiveTurn.toolCount || 0) || 0,
+  );
+  return normalizeMessageActivity({
+    ...previousActivity,
+    run_id: "",
+    status: "background_running",
+    summary: "",
+    started_at: clientSubmittedAtMs,
+    turn_started_at: logicalTurnStartedAtMs || previousActivity.turn_started_at,
+    finished_at: 0,
+    run_duration_ms: 0,
+    final_elapsed_ms: 0,
+    live_model_started: false,
+    live_model: runModelName || previousActivity.live_model,
+    model_draft: "",
+    final_answer: "",
+    runtime_error: {},
+    plan: resumePlan,
+    tool_items: resumeToolItems,
+    tool_count: resumeToolCount,
+    trace_events: previousActivity.trace_events,
+  });
 }
 
 function buildLiveDisplayActivity(activity, options = {}) {
@@ -3962,6 +4234,18 @@ function buildLiveDisplayActivity(activity, options = {}) {
     const traceType = String((trace && trace.type) || "").trim();
     return !["run.finished", "answer.done", "answer.finished"].includes(traceType);
   });
+  const liveTurnState = options.liveTurnState && typeof options.liveTurnState === "object"
+    ? options.liveTurnState
+    : {};
+  const hasLivePlan = Object.prototype.hasOwnProperty.call(liveTurnState, "plan")
+    && Array.isArray(liveTurnState.plan);
+  const displayPlan = hasLivePlan ? normalizePlanChecklist(liveTurnState.plan) : item.plan;
+  const displayToolItems = mergeActivityToolItems(item.tool_items, options.liveToolTimeline);
+  const displayToolCount = Math.max(
+    item.tool_count,
+    displayToolItems.length,
+    Number(options.liveToolCount || 0) || 0,
+  );
   return normalizeMessageActivity({
     ...item,
     status: displayStatus,
@@ -3971,6 +4255,9 @@ function buildLiveDisplayActivity(activity, options = {}) {
     final_elapsed_ms: displayStatusIsTerminal ? item.final_elapsed_ms : 0,
     live_model_started: Boolean(item.live_model_started || (heartbeatStatus === "waiting_model" && heartbeatSource === "model")),
     live_model: String(item.live_model || heartbeat.model || "").trim(),
+    plan: displayPlan,
+    tool_items: displayToolItems,
+    tool_count: displayToolCount,
     trace_events: filteredTraceEvents,
   });
 }
@@ -4412,6 +4699,8 @@ function App() {
   const [selectedPresetModel, setSelectedPresetModel] = useState("");
   const [uiError, setUiError] = useState(null);
   const toolTimeline = appState.activeTurn.toolTimeline;
+  const liveToolCount = Math.max(0, Number(appState.activeTurn.toolCount || 0) || 0);
+  const toolEventIds = Array.isArray(appState.activeTurn.toolEventIds) ? appState.activeTurn.toolEventIds : [];
   const liveTurnState = appState.activeTurn.liveTurnState;
   const liveEvidence = appState.activeTurn.liveEvidence;
   const liveToolTimeline = appState.activeTurn.liveToolTimeline;
@@ -4611,6 +4900,8 @@ function App() {
     .join("|");
   const setLastResponse = (value) => dispatch({ type: "update", path: ["activeTurn", "lastResponse"], value });
   const setToolTimeline = (value) => dispatch({ type: "update", path: ["activeTurn", "toolTimeline"], value });
+  const setLiveToolCount = (value) => dispatch({ type: "update", path: ["activeTurn", "toolCount"], value });
+  const setToolEventIds = (value) => dispatch({ type: "update", path: ["activeTurn", "toolEventIds"], value });
   const setLiveTurnState = (value) => dispatch({ type: "update", path: ["activeTurn", "liveTurnState"], value });
   const setLiveEvidence = (value) => dispatch({ type: "update", path: ["activeTurn", "liveEvidence"], value });
   const setLiveToolTimeline = (value) => dispatch({ type: "update", path: ["activeTurn", "liveToolTimeline"], value });
@@ -6007,6 +6298,8 @@ function App() {
     setLastResponse(null);
     setToolTimeline([]);
     setLiveToolTimeline([]);
+    setLiveToolCount(0);
+    setToolEventIds([]);
     setLiveTurnState({});
     setLiveEvidence({});
     setLiveRunLogs([]);
@@ -6040,6 +6333,8 @@ function App() {
       lastResponse,
       toolTimeline,
       liveToolTimeline,
+      toolCount: liveToolCount,
+      toolEventIds,
       liveTurnState,
       liveEvidence,
       liveRunLogs,
@@ -6197,6 +6492,8 @@ function App() {
     setLastResponse(next.lastResponse);
     setToolTimeline(next.toolTimeline);
     setLiveToolTimeline(next.liveToolTimeline);
+    setLiveToolCount(next.toolCount);
+    setToolEventIds(next.toolEventIds);
     setLiveTurnState(next.liveTurnState);
     setLiveEvidence(next.liveEvidence);
     setLiveRunLogs(next.liveRunLogs);
@@ -7037,9 +7334,16 @@ function App() {
       if (requestSeq !== activeThreadRequestSeqRef.current) return false;
       const existingSnapshot = threadDetailCacheRef.current.get(sid) || null;
       const existingActiveTurn = normalizeThreadActiveTurn((existingSnapshot && existingSnapshot.activeTurn) || {});
+      const preservePendingContinuity = Boolean(
+        existingSnapshot
+        && hasPendingRuntimeInteraction(existingSnapshot.sessionRuntimeState)
+        && hasPendingRuntimeInteraction(data.agent_state),
+      );
       const preserveLiveSnapshot = Boolean(
         existingSnapshot
         && (
+          preservePendingContinuity
+          ||
           isThreadSnapshotLive(sid, existingSnapshot)
           || isCurrentThreadLiveRun({
             sessionId: sid,
@@ -7792,6 +8096,10 @@ function App() {
             ...((sessionRuntimeState.pending_approval && typeof sessionRuntimeState.pending_approval === "object") ? sessionRuntimeState.pending_approval : {}),
             ...((pendingResumeStateOption.pending_approval && typeof pendingResumeStateOption.pending_approval === "object") ? pendingResumeStateOption.pending_approval : {}),
           },
+          pending_turn: {
+            ...((sessionRuntimeState.pending_turn && typeof sessionRuntimeState.pending_turn === "object") ? sessionRuntimeState.pending_turn : {}),
+            ...((pendingResumeStateOption.pending_turn && typeof pendingResumeStateOption.pending_turn === "object") ? pendingResumeStateOption.pending_turn : {}),
+          },
         }
       : null;
     if (currentThreadBusy && !isTurnResume && !fromQueuedTurn) {
@@ -7856,6 +8164,25 @@ function App() {
     const logicalTurnStartedAtMs = isTurnResume
       ? (resumableTurnStartedAt(messages, sessionRuntimeState) || clientSubmittedAtMs)
       : clientSubmittedAtMs;
+    const resumePendingTurn = isTurnResume
+      && resumePendingState
+      && resumePendingState.pending_turn
+      && typeof resumePendingState.pending_turn === "object"
+      ? resumePendingState.pending_turn
+      : {};
+    const resumeActiveTurnSnapshot = isTurnResume
+      ? normalizeThreadActiveTurn({
+          ...visibleThreadActiveTurnSnapshot(),
+          ...mergeRuntimeToolState(
+            visibleThreadActiveTurnSnapshot(),
+            resumePendingTurn.logical_tool_events,
+            {
+              minimumCount: resumePendingTurn.logical_tool_count,
+              toolEventIds: resumePendingTurn.logical_tool_event_ids,
+            },
+          ),
+        })
+      : createEmptyThreadActiveTurn();
     const uploadsInFlight = pendingUploads.some((item) => item && item.uploading);
     if (uploadsInFlight) {
       const summary = t("errors.upload_in_progress");
@@ -7869,15 +8196,19 @@ function App() {
 
     setContextMeterOpen(false);
     setStoppingRun(false);
-    setActiveRunId("");
+    if (!isTurnResume) setActiveRunId("");
     setActiveRunStartedAt(logicalTurnStartedAtMs);
     clearUiError();
-    setToolTimeline([]);
-    setLiveToolTimeline([]);
-    setLiveTurnState({});
-    setLiveEvidence({});
-    setLiveRunLogs([]);
-    setStageTimeline([]);
+    if (!isTurnResume) {
+      setToolTimeline([]);
+      setLiveToolTimeline([]);
+      setLiveToolCount(0);
+      setToolEventIds([]);
+      setLiveTurnState({});
+      setLiveEvidence({});
+      setLiveRunLogs([]);
+      setStageTimeline([]);
+    }
 
     let sid = targetSessionId;
     let pendingMessage = null;
@@ -7931,23 +8262,29 @@ function App() {
         (health && health.default_model) ||
         "",
       ).trim();
+      const pendingActivity = buildPendingAssistantActivity({
+        isTurnResume,
+        messages,
+        sessionRuntimeState,
+        resumePendingTurn,
+        resumeActiveTurn: resumeActiveTurnSnapshot,
+        clientSubmittedAtMs,
+        logicalTurnStartedAtMs,
+        runModelName,
+      });
       pendingMessage = createMessage("assistant", t("labels.processing"), {
         pending: true,
-        activity: {
-          status: "background_running",
-          started_at: clientSubmittedAtMs,
-          turn_started_at: logicalTurnStartedAtMs,
-          live_model: runModelName,
-          trace_events: [],
-        },
+        activity: pendingActivity,
       });
       const nextInitialRuntimeState = {
+        ...(isTurnResume ? sessionRuntimeState : {}),
         goal: isTurnResume ? String(sessionRuntimeState.goal || messageText) : messageText,
         permission_profile: normalizePermissionProfile(runSettings.permission_profile || "auto"),
         turn_status: "running",
-        plan: isTurnResume && Array.isArray(sessionRuntimeState.plan) ? sessionRuntimeState.plan : [],
+        plan: isTurnResume ? pendingActivity.plan : [],
         pending_user_input: {},
         pending_approval: {},
+        pending_turn: {},
       };
       const initialLiveHeartbeat = normalizeLiveHeartbeat({
         status: "background_running",
@@ -7959,8 +8296,17 @@ function App() {
       });
       const initialActiveTurn = (existingActiveTurn) => {
         const existingTurn = normalizeThreadActiveTurn(existingActiveTurn);
+        const baseTurn = isTurnResume
+          ? normalizeThreadActiveTurn({
+              ...existingTurn,
+              ...mergeRuntimeToolState(existingTurn, resumePendingTurn.logical_tool_events, {
+                minimumCount: resumePendingTurn.logical_tool_count,
+                toolEventIds: resumePendingTurn.logical_tool_event_ids,
+              }),
+            })
+          : createEmptyThreadActiveTurn();
         return normalizeThreadActiveTurn({
-          ...createEmptyThreadActiveTurn(),
+          ...baseTurn,
           sending: true,
           activeRunThreadId: runOwnerThreadId,
           startedAt: logicalTurnStartedAtMs,
@@ -7968,13 +8314,13 @@ function App() {
           liveHeartbeat: initialLiveHeartbeat,
           lastResponse: existingTurn.lastResponse || lastResponse || null,
           liveTurnState: nextInitialRuntimeState,
-          liveEvidence: { status: "not_needed" },
+          liveEvidence: isTurnResume ? baseTurn.liveEvidence : { status: "not_needed" },
           pendingGuidance: existingTurn.pendingGuidance.filter(
             (item) => String(item.delivery || "") === "next_turn",
           ),
         });
       };
-      updateThreadSnapshot(runOwnerThreadId, (existing) => ({
+      const initializedOwnerSnapshot = updateThreadSnapshot(runOwnerThreadId, (existing) => ({
         ...existing,
         messages: appendMessagesOnceById(
           Array.isArray(existing.messages) && existing.messages.length
@@ -7991,10 +8337,10 @@ function App() {
             ? appendMessagesOnceById(prev, [userMessage, pendingMessage].filter(Boolean))
             : prev
         ));
-        setLiveTurnState(nextInitialRuntimeState);
-        setLiveEvidence({ status: "not_needed" });
-        setLastLiveProgressAt(clientSubmittedAtMs);
-        setLiveHeartbeat(initialLiveHeartbeat);
+        applyVisibleThreadActiveTurn(
+          (initializedOwnerSnapshot && initializedOwnerSnapshot.activeTurn)
+          || initialActiveTurn(resumeActiveTurnSnapshot),
+        );
       }
       if (overrideText == null) setDraft("");
 
@@ -8053,7 +8399,7 @@ function App() {
       let latestThreadId = String(sid || "");
       let latestRunSnapshot = {};
       let latestEvidenceState = { status: "not_needed" };
-      let latestToolEvents = [];
+      let latestToolEvents = isTurnResume ? resumeActiveTurnSnapshot.liveToolTimeline : [];
       let latestTokenUsage = {};
       let latestSessionTokenTotals = {};
       let latestGlobalTokenTotals = {};
@@ -8114,6 +8460,8 @@ function App() {
         setLastResponse(nextTurn.lastResponse);
         setToolTimeline(nextTurn.toolTimeline);
         setLiveToolTimeline(nextTurn.liveToolTimeline);
+        setLiveToolCount(nextTurn.toolCount);
+        setToolEventIds(nextTurn.toolEventIds);
         setLiveTurnState(nextTurn.liveTurnState);
         setLiveEvidence(nextTurn.liveEvidence);
         setLiveRunLogs(nextTurn.liveRunLogs);
@@ -8742,6 +9090,9 @@ function App() {
           startedAt: snapshotTurnStartedAt || prev.startedAt || logicalTurnStartedAtMs,
           lastLiveProgressAt: Date.now(),
           liveTurnState: mergeRunSnapshot(prev.liveTurnState || {}, snapshot),
+          toolCount: Object.prototype.hasOwnProperty.call(snapshot, "tool_count")
+            ? Math.max(Number(prev.toolCount || 0) || 0, Number(snapshot.tool_count || 0) || 0)
+            : prev.toolCount,
         }));
         if (Object.prototype.hasOwnProperty.call(snapshot, "evidence_status")) {
           latestEvidenceState = {
@@ -8782,12 +9133,8 @@ function App() {
       };
       const recordToolItem = (item) => {
         if (!item || typeof item !== "object") return;
-        latestToolEvents = [item, ...latestToolEvents.filter((entry) => String(entry.id || "") !== String(item.id || ""))].slice(0, RECENT_TOOL_TIMELINE_LIMIT);
-        updateOwnerActiveTurn((prev) => ({
-          ...prev,
-          toolTimeline: [item, ...(Array.isArray(prev.toolTimeline) ? prev.toolTimeline : []).filter((entry) => String(entry.id || "") !== String(item.id || ""))].slice(0, RECENT_TOOL_TIMELINE_LIMIT),
-          liveToolTimeline: [item, ...(Array.isArray(prev.liveToolTimeline) ? prev.liveToolTimeline : []).filter((entry) => String(entry.id || "") !== String(item.id || ""))].slice(0, RECENT_TOOL_TIMELINE_LIMIT),
-        }));
+        latestToolEvents = mergeRuntimeToolTimeline(latestToolEvents, [item]);
+        updateOwnerActiveTurn((prev) => ({ ...prev, ...mergeRuntimeToolState(prev, [item]) }));
         patchPendingActivity((activity) => mergeActivityState(activity, {
           tool_items: [item],
         }));
@@ -9381,8 +9728,25 @@ function App() {
         latestThreadId = String(finalPayload.thread_id || finalPayload.session_id || latestThreadId || "");
         if (latestThreadId && ownerThreadVisible()) setSessionId(latestThreadId);
       }
+      const finalRunState = ((finalPayload.inspector || {}).run_state) || {};
+      const finalLogicalToolEvents = Array.isArray(finalRunState.logical_tool_events)
+        ? finalRunState.logical_tool_events
+        : (Array.isArray(finalPayload.tool_events) ? finalPayload.tool_events : []);
+      const finalLogicalToolCount = Math.max(
+        0,
+        Number(finalRunState.logical_tool_count || 0) || 0,
+        Number(latestRunSnapshot.tool_count || 0) || 0,
+      );
+      const finalLogicalToolIds = Array.isArray(finalRunState.logical_tool_event_ids)
+        ? finalRunState.logical_tool_event_ids
+        : [];
+      latestToolEvents = mergeRuntimeToolTimeline(latestToolEvents, finalLogicalToolEvents);
       updateOwnerActiveTurn((prev) => ({
         ...prev,
+        ...mergeRuntimeToolState(prev, finalLogicalToolEvents, {
+          minimumCount: finalLogicalToolCount,
+          toolEventIds: finalLogicalToolIds,
+        }),
         lastResponse: finalPayload,
         liveTurnState: mergeRunSnapshot(prev.liveTurnState || {}, {
           ...(((finalPayload.inspector || {}).run_state) || {}),
@@ -9401,7 +9765,6 @@ function App() {
           ...latestEvidenceState,
           ...(((finalPayload.inspector || {}).evidence) || {}),
         },
-        liveToolTimeline: Array.isArray(finalPayload.tool_events) ? finalPayload.tool_events : latestToolEvents,
       }));
       if (latestThreadId) updateThreadStatus(latestThreadId, "idle");
       setHealth((prev) => (
@@ -9435,8 +9798,8 @@ function App() {
           last_run_id: String(finalPayload.run_id || ""),
           last_model: String(finalPayload.effective_model || ""),
           context_meter: finalPayload.context_meter || (((finalPayload.inspector || {}).run_state || {}).context_meter) || (((finalPayload.inspector || {}).session || {}).context_meter) || {},
-          tool_hits: Array.isArray(finalPayload.tool_events) ? finalPayload.tool_events : [],
-          tool_count: Array.isArray(finalPayload.tool_events) ? finalPayload.tool_events.length : 0,
+          tool_hits: latestToolEvents,
+          tool_count: Math.max(finalLogicalToolCount, latestToolEvents.length),
           evidence_status: String((((finalPayload.inspector || {}).evidence || {}).status) || "not_needed"),
           loaded_skills: Array.isArray((finalPayload.inspector || {}).loaded_skills) ? finalPayload.inspector.loaded_skills : sessionLoadedSkills,
           enabled_skill_ids: Array.isArray((finalPayload.inspector || {}).loaded_skills)
@@ -9447,11 +9810,11 @@ function App() {
       pushLogWithLimit(
         setLogs,
         "response",
-        t("log.reply_received", { count: Array.isArray(finalPayload.tool_events) ? finalPayload.tool_events.length : 0 }),
+        t("log.reply_received", { count: Math.max(finalLogicalToolCount, latestToolEvents.length) }),
       );
       pushLiveLog(
         "response",
-        t("log.reply_received", { count: Array.isArray(finalPayload.tool_events) ? finalPayload.tool_events.length : 0 }),
+        t("log.reply_received", { count: Math.max(finalLogicalToolCount, latestToolEvents.length) }),
       );
       const reconciledMessages = await reconcileCompletedThreadMessages(latestThreadId || runOwnerThreadId);
       if (!reconciledMessages) {
@@ -9864,6 +10227,10 @@ function App() {
     (runState.pending_user_input && typeof runState.pending_user_input === "object")
       ? runState.pending_user_input
       : ((sessionRuntimeState.pending_user_input && typeof sessionRuntimeState.pending_user_input === "object") ? sessionRuntimeState.pending_user_input : {});
+  const activePendingTurn =
+    (runState.pending_turn && typeof runState.pending_turn === "object")
+      ? runState.pending_turn
+      : ((sessionRuntimeState.pending_turn && typeof sessionRuntimeState.pending_turn === "object") ? sessionRuntimeState.pending_turn : {});
   const activePendingApproval = (() => {
     // Hide only the approval currently being consumed. A later approval can
     // arrive before the resumed request finishes (for example while Subagents
@@ -10006,6 +10373,7 @@ function App() {
           turn_status: "needs_user_input",
           pending_user_input: activePendingInput,
           pending_approval: activePendingApproval,
+          pending_turn: activePendingTurn,
         },
       });
     } finally {
@@ -10038,6 +10406,7 @@ function App() {
           turn_status: "needs_user_input",
           pending_user_input: activePendingInput,
           pending_approval: activePendingApproval,
+          pending_turn: activePendingTurn,
         },
       });
     } finally {
@@ -10063,13 +10432,8 @@ function App() {
       return itemId && String(nextSelections[itemId] || "").trim();
     });
     if (!allQuestionsAnswered) return;
-    const response = pendingRuntimeQuestions.length === 1
-      ? optionLabel
-      : pendingRuntimeQuestions.map((item) => {
-          const itemId = String((item && (item.id || item.header || item.question)) || "").trim();
-          const itemLabel = String((item && (item.header || item.question || item.id)) || itemId).trim();
-          return `${itemLabel}: ${String(nextSelections[itemId] || "").trim()}`;
-        }).join("\n");
+    const response = formatRuntimeInputResponse(pendingRuntimeQuestions, nextSelections);
+    if (!response) return;
     const submissionKey = runtimeInputSubmissionKey;
     if (!claimRuntimeInputSubmission(submissionKey)) return;
     try {
@@ -10082,6 +10446,7 @@ function App() {
           turn_status: "needs_user_input",
           pending_user_input: activePendingInput,
           pending_approval: activePendingApproval,
+          pending_turn: activePendingTurn,
         },
       });
     } finally {
@@ -10345,6 +10710,7 @@ function App() {
     activityClockMs,
     hasLiveRuntimeState,
     liveToolTimeline,
+    liveToolCount,
     inspectorToolTimeline: lastInspector.tool_timeline,
     fallbackToolTimeline: toolTimeline,
     contextMeter: activeContextMeter,
@@ -10368,6 +10734,7 @@ function App() {
     activityClockMs,
     hasLiveRuntimeState,
     liveToolTimeline,
+    liveToolCount,
     lastInspector,
     toolTimeline,
     activeContextMeter,
@@ -11207,6 +11574,8 @@ function App() {
           activeRunStartedAt,
           hasRunningActivity,
           liveTurnState,
+          liveToolTimeline,
+          liveToolCount,
           liveHeartbeat: activeLiveHeartbeat,
         })
       : activity;
@@ -11330,6 +11699,8 @@ function App() {
         activeRunStartedAt,
         hasRunningActivity,
         liveTurnState,
+        liveToolTimeline,
+        liveToolCount,
         liveHeartbeat: activeLiveHeartbeat,
       });
       return pendingAssistantFallbackState({ ...item, activity: displayActivity }, uiLocale, activityClockMs || Date.now()).text;

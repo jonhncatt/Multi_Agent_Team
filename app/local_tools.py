@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from bisect import bisect_right
+from functools import wraps
 import json
 import fnmatch
 import hashlib
@@ -111,6 +113,20 @@ def _display_model_path(path: Path, *, project_root: Path, cwd: Path | None = No
         except Exception:
             pass
     return str(resolved)
+
+
+def _display_resolved_search_path(path: Path, *, project_root: Path, cwd: Path) -> str:
+    """Format already-resolved search paths; NOT a permission resolver.
+
+    Filename results must still pass _resolve_path individually before this.
+    Avoid re-resolving the same path and display roots for every returned hit.
+    """
+    for root in (project_root, cwd):
+        try:
+            return path.relative_to(root).as_posix()
+        except ValueError:
+            pass
+    return str(path)
 
 
 def _path_payload(path: Path, *, project_root: Path, cwd: Path | None = None) -> dict[str, Any]:
@@ -813,16 +829,33 @@ def _build_search_pattern(query: str) -> re.Pattern[str] | None:
     return re.compile(body, flags=re.IGNORECASE)
 
 
-def _page_hint_for_offset(text: str, offset: int) -> int | None:
-    page = None
+def _page_marker_index(text: str) -> tuple[list[int], list[int]]:
+    offsets: list[int] = []
+    pages: list[int] = []
     for match in re.finditer(r"--- Page (\d+) ---", text):
-        if match.start() > offset:
-            break
         try:
             page = int(match.group(1))
         except Exception:
-            page = None
-    return page
+            continue
+        offsets.append(match.start())
+        pages.append(page)
+    return offsets, pages
+
+
+def _page_hint_for_offset(
+    text: str,
+    offset: int,
+    *,
+    marker_offsets: list[int] | None = None,
+    marker_pages: list[int] | None = None,
+) -> int | None:
+    offsets, pages = (
+        (marker_offsets, marker_pages)
+        if marker_offsets is not None and marker_pages is not None
+        else _page_marker_index(text)
+    )
+    index = bisect_right(offsets, offset) - 1
+    return pages[index] if index >= 0 else None
 
 
 def _spans_overlap(left: tuple[int, int], right: tuple[int, int]) -> bool:
@@ -1159,8 +1192,26 @@ def _parse_workspace_patch(patch_text: str) -> list[dict[str, Any]]:
     raise ValueError("patch ended unexpectedly before '*** End Patch'")
 
 
+def _invalidates_filename_cache(method):
+    """Unknown/multi-destination writes may partially succeed even on failure.
+
+    Conservatively invalidate after mutation attempts, but never rescan here.
+    Decorate actual public methods so direct backend calls are covered too.
+    """
+    @wraps(method)
+    def wrapped(self, *args, **kwargs):
+        try:
+            return method(self, *args, **kwargs)
+        finally:
+            self._filename_search.invalidate()
+    return wrapped
+
+
 class LocalToolExecutor:
     def __init__(self, config: AppConfig) -> None:
+        from app.filename_search import FilenameSearch
+
+        self._filename_search = FilenameSearch()
         self.config = config
         self._runtime_ctx = threading.local()
         self._web_cache_lock = threading.Lock()
@@ -3507,6 +3558,7 @@ class LocalToolExecutor:
                             return
                         session["buffer"] = str(session.get("buffer") or "") + text
             finally:
+                self._filename_search.invalidate()
                 try:
                     stream.close()
                 except Exception:
@@ -3965,11 +4017,12 @@ class LocalToolExecutor:
             {
                 "type": "function",
                 "name": "glob_file_search",
-                "description": "Find files by glob pattern relative to the workspace or a given directory root.",
+                "description": "Find project files by glob. By default skip hidden, ignored and dependency files; use include_ignored to search all files.",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "pattern": {"type": "string"},
+                        "include_ignored": {"type": "boolean", "default": False},
                         "path": {"type": "string", "default": "."},
                         "max_results": {"type": "integer", "minimum": 1, "maximum": 500, "default": 200},
                         "offset": {"type": "integer", "minimum": 0, "default": 0},
@@ -4075,8 +4128,24 @@ class LocalToolExecutor:
             },
             {
                 "type": "function",
+                "name": "search_files",
+                "description": "Fuzzy filename/path lookup (e.g. vprb or runtime backend), not content search. VP writes invalidate snapshots lazily; use refresh after external filesystem changes. Incomplete walks are not evidence of absence.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "minLength": 1, "maxLength": 256},
+                        "root": {"type": "string", "default": "."},
+                        "max_results": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20},
+                        "refresh": {"type": "boolean", "default": False},
+                    },
+                    "required": ["query"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "type": "function",
                 "name": "search_codebase",
-                "description": "Search code or text files under a local root and return structured file, line, and text matches.",
+                "description": "Search file contents only under a local root and return structured line matches. Use search_files for fuzzy filenames or glob_file_search for exact path patterns.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -4684,6 +4753,9 @@ class LocalToolExecutor:
         if name == "search_codebase":
             result = self.search_codebase(**arguments)
             return self._decorate_result(result)
+        if name == "search_files":
+            result = self.search_files(**arguments)
+            return self._decorate_result(result)
         if name == "web_search":
             result = self.web_search(**arguments)
             return self._decorate_result(result)
@@ -4776,6 +4848,7 @@ class LocalToolExecutor:
             normalized["path"] = normalized.pop("image_path")
         return normalized
 
+    @_invalidates_filename_cache
     def exec_command(
         self,
         cmd: str,
@@ -5238,6 +5311,7 @@ class LocalToolExecutor:
         payload.setdefault("summary", "command started")
         return payload
 
+    @_invalidates_filename_cache
     def write_stdin(
         self,
         session_id: int,
@@ -5493,6 +5567,7 @@ class LocalToolExecutor:
             or {}
         )
 
+    @_invalidates_filename_cache
     def save_skill(
         self,
         name: str,
@@ -5783,6 +5858,7 @@ class LocalToolExecutor:
             "summary": f"Found {len(matches)} matching Task(s).",
         }
 
+    @_invalidates_filename_cache
     def save_task(
         self,
         title: str,
@@ -6063,6 +6139,7 @@ class LocalToolExecutor:
         path: str = ".",
         max_results: int = 200,
         offset: int = 0,
+        include_ignored: bool = False,
     ) -> dict[str, Any]:
         try:
             normalized_pattern = str(pattern or "").strip()
@@ -6076,7 +6153,27 @@ class LocalToolExecutor:
             limit = max(1, min(500, int(max_results)))
             start = max(0, int(offset or 0))
             root_payload = _path_payload(real_root, project_root=self._current_project_root(), cwd=Path(self._current_cwd_hint()))
-            all_matches = [candidate for candidate in sorted(real_root.glob(normalized_pattern)) if candidate.is_file()]
+            all_matches = self._glob_files_with_ripgrep(real_root, normalized_pattern, include_ignored=include_ignored)
+            search_engine = "ripgrep"
+            if all_matches is None:
+                all_matches = [candidate for candidate in sorted(real_root.glob(normalized_pattern)) if candidate.is_file()]
+                if not include_ignored:
+                    from app.code_search import SKIP_DIRS
+                    all_matches = [p for p in all_matches if not any(
+                        part.startswith(".") or part in SKIP_DIRS
+                        for part in p.relative_to(real_root).parts
+                    )]
+                    if shutil.which("git") and all_matches:
+                        ignored = subprocess.run(
+                            ["git", "check-ignore", "--stdin", "-z"], cwd=real_root,
+                            input=b"\0".join(os.fsencode(p.relative_to(real_root)) for p in all_matches) + b"\0",
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20,
+                            **self._command_process_creation_kwargs(),
+                        )
+                        if ignored.returncode in (0, 1):
+                            excluded = set(ignored.stdout.split(b"\0"))
+                            all_matches = [p for p in all_matches if os.fsencode(p.relative_to(real_root)) not in excluded]
+                search_engine = "python_fallback"
             if _is_broad_glob_pattern(normalized_pattern) and len(all_matches) > _BROAD_GLOB_GUIDANCE_THRESHOLD:
                 return {
                     "ok": False,
@@ -6090,6 +6187,7 @@ class LocalToolExecutor:
                     "root_ref": root_payload["root_ref"],
                     "resolved_root": str(real_root.resolve()),
                     "pattern": normalized_pattern,
+                    "search_engine": search_engine,
                     "total_matches": len(all_matches),
                     "max_results": limit,
                     "truncated": True,
@@ -6115,6 +6213,7 @@ class LocalToolExecutor:
                 "root_ref": root_payload["root_ref"],
                 "resolved_root": str(real_root.resolve()),
                 "pattern": normalized_pattern,
+                "search_engine": search_engine,
                 "count": len(matches),
                 "matches": matches,
                 "total_matches": len(all_matches),
@@ -6133,6 +6232,58 @@ class LocalToolExecutor:
             }
         except Exception as exc:
             return {"ok": False, "error": f"glob_file_search failed: {exc}"}
+
+    def _glob_files_with_ripgrep(self, root: Path, pattern: str, *, include_ignored: bool = False) -> list[Path] | None:
+        rg = shutil.which("rg")
+        if not rg:
+            return None
+        # Path.glob treats these as ordinary or unsupported syntax while
+        # ripgrep's globset gives them different meanings. Preserve the Python
+        # fallback for uncommon patterns whose semantics would otherwise drift.
+        if pattern.startswith(("/", "!")) or "{" in pattern or "}" in pattern:
+            return None
+        rg_pattern = pattern.replace("\\", "/") if os.name == "nt" else pattern
+        from app.code_search import SKIP_DIRS
+        filters = (["-g", f"/{rg_pattern}"] if include_ignored else
+                   [arg for directory in sorted(SKIP_DIRS) for arg in ("-g", f"!**/{directory}/**")])
+        try:
+            completed = subprocess.run(
+                [
+                    rg,
+                    "--files",
+                    "--threads",
+                    "0",
+                    *(["--hidden", "--no-ignore"] if include_ignored else []),
+                    "-0",
+                    *filters,
+                    "--",
+                    ".",
+                ],
+                cwd=root,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=20,
+                **self._command_process_creation_kwargs(),
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError("ripgrep file search timed out") from exc
+        except OSError:
+            return None
+        if completed.returncode not in (0, 1):
+            return None
+        paths = [root / os.fsdecode(raw) for raw in completed.stdout.split(b"\0") if raw]
+        if not include_ignored:
+            def matches(parts: tuple[str, ...], patterns: tuple[str, ...]) -> bool:
+                if not patterns:
+                    return not parts
+                if patterns[0] == "**":
+                    return matches(parts, patterns[1:]) or bool(parts and matches(parts[1:], patterns))
+                return bool(parts and fnmatch.fnmatch(parts[0], patterns[0]) and matches(parts[1:], patterns[1:]))
+            patterns = tuple(part for part in rg_pattern.split("/") if part and part != ".")
+            paths = [p for p in paths if matches(p.relative_to(root).parts, patterns)]
+        # `rg --files` only emits file entries, so avoid a stat call for every
+        # result before sorting large workspaces.
+        return sorted(paths)
 
     def search_contents_in_file(
         self,
@@ -6199,6 +6350,7 @@ class LocalToolExecutor:
         payload.setdefault("tool_name", "web_fetch")
         return payload
 
+    @_invalidates_filename_cache
     def web_download(
         self,
         url: str,
@@ -6505,6 +6657,7 @@ class LocalToolExecutor:
         }
         return payload
 
+    @_invalidates_filename_cache
     def archive_extract(
         self,
         zip_path: str,
@@ -6537,6 +6690,7 @@ class LocalToolExecutor:
         payload.setdefault("tool_name", "archive_extract")
         return payload
 
+    @_invalidates_filename_cache
     def mail_extract_attachments(
         self,
         msg_path: str,
@@ -6832,6 +6986,7 @@ class LocalToolExecutor:
             max_links=max_links,
         )
 
+    @_invalidates_filename_cache
     def browser_screenshot(self, path: str = "", full_page: bool = True) -> dict[str, Any]:
         try:
             target = (
@@ -6989,11 +7144,17 @@ class LocalToolExecutor:
                 }
 
             for target, content in pending_writes:
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_text(content, encoding="utf-8")
+                try:
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_text(content, encoding="utf-8")
+                finally:
+                    self._filename_search.invalidate(target)
             for target in pending_deletes:
                 if target.exists():
-                    target.unlink()
+                    try:
+                        target.unlink()
+                    finally:
+                        self._filename_search.invalidate(target)
             return {
                 "ok": True,
                 "cwd": str(real_cwd),
@@ -7237,6 +7398,199 @@ class LocalToolExecutor:
             "source_truncated": not source_complete,
         }
 
+    def _load_searchable_document(self, *, path: str) -> dict[str, Any]:
+        real_path = self._resolve_source_path(path)
+        if not real_path.exists():
+            return {"ok": False, "error": f"Path not found: {path}"}
+        if not real_path.is_file():
+            return {"ok": False, "error": f"Not a file: {path}"}
+
+        if _looks_like_pdf_path(real_path):
+            pages = extract_pdf_page_texts_from_path(real_path)
+            return {
+                "ok": True,
+                "kind": "pdf_pages",
+                "path": str(real_path),
+                "real_path": real_path,
+                "source_format": "pdf_text_extracted",
+                "pages": pages,
+                "source_complete": True,
+                "source_truncated": False,
+            }
+
+        base = self._read_searchable_text(path=path, real_path=real_path)
+        if not bool(base.get("ok")):
+            return base
+        text = str(base.get("content") or "")
+        marker_offsets, marker_pages = _page_marker_index(text)
+        return {
+            **base,
+            "kind": "text",
+            "real_path": real_path,
+            "content": text,
+            "page_marker_offsets": marker_offsets,
+            "page_marker_pages": marker_pages,
+        }
+
+    def _search_loaded_document(
+        self,
+        document: dict[str, Any],
+        *,
+        query: str,
+        max_matches: int,
+        context_chars: int,
+    ) -> dict[str, Any]:
+        normalized_query = _normalize_search_query(query)
+        if not normalized_query:
+            return {"ok": False, "error": "query is empty"}
+
+        variants = _expand_search_variants(normalized_query)
+        limit = max(1, min(20, int(max_matches)))
+        window = max(40, min(2000, int(context_chars)))
+        matches: list[dict[str, Any]] = []
+        collection_limit = limit + 1
+
+        if document.get("kind") == "pdf_pages":
+            pages = list(document.get("pages") or [])
+            for variant in variants:
+                pattern = _build_search_pattern(variant)
+                if pattern is None:
+                    continue
+                for page_num, body in pages:
+                    for found in pattern.finditer(body):
+                        span = found.span()
+                        start = max(0, span[0] - window)
+                        end = min(len(body), span[1] + window)
+                        matches.append(
+                            {
+                                "query_variant": variant,
+                                "matched_text": found.group(0),
+                                "start_char": span[0],
+                                "end_char": span[1],
+                                "page_hint": page_num,
+                                "context": body[start:end].strip(),
+                                "read_hint": {
+                                    "page_hint": page_num,
+                                    "start_char": max(0, span[0] - 2000),
+                                    "max_chars": 6000,
+                                },
+                            }
+                        )
+                        if len(matches) >= collection_limit:
+                            break
+                    if len(matches) >= collection_limit:
+                        break
+                if len(matches) >= collection_limit:
+                    break
+
+            matches_truncated = len(matches) > limit
+            visible_matches = matches[:limit]
+            return {
+                "ok": True,
+                "path": str(document.get("path") or ""),
+                "source_format": "pdf_text_extracted",
+                "query": normalized_query,
+                "searched_variants": variants,
+                "match_count": len(visible_matches),
+                "returned_count": len(visible_matches),
+                "total_matches": None if matches_truncated else len(visible_matches),
+                "max_matches": limit,
+                "matches": visible_matches,
+                "truncated": matches_truncated,
+                "has_more": matches_truncated,
+                "source_complete": True,
+                "source_truncated": False,
+                "search_complete": not matches_truncated,
+                "continuation": (
+                    {"strategy": "refine_query", "message": "Narrow the query or search a more specific document section."}
+                    if matches_truncated
+                    else None
+                ),
+                "note": (
+                    "Search was run page-by-page over extracted PDF text. "
+                    "If match_count=0, only conclude that the current extracted PDF text did not show a hit."
+                ),
+            }
+
+        text = str(document.get("content") or "")
+        source_complete = bool(document.get("source_complete", True))
+        marker_offsets = list(document.get("page_marker_offsets") or [])
+        marker_pages = list(document.get("page_marker_pages") or [])
+        seen_spans: list[tuple[int, int]] = []
+        for variant in variants:
+            pattern = _build_search_pattern(variant)
+            if pattern is None:
+                continue
+            for found in pattern.finditer(text):
+                span = found.span()
+                if any(_spans_overlap(span, prior) for prior in seen_spans):
+                    continue
+                seen_spans.append(span)
+
+                start = max(0, span[0] - window)
+                end = min(len(text), span[1] + window)
+                page_hint = _page_hint_for_offset(
+                    text,
+                    span[0],
+                    marker_offsets=marker_offsets,
+                    marker_pages=marker_pages,
+                )
+                matches.append(
+                    {
+                        "query_variant": variant,
+                        "matched_text": found.group(0),
+                        "start_char": span[0],
+                        "end_char": span[1],
+                        "page_hint": page_hint,
+                        "context": text[start:end].strip(),
+                        "read_hint": {
+                            "start_char": max(0, span[0] - 2000),
+                            "max_chars": 6000,
+                        },
+                    }
+                )
+                if len(matches) >= collection_limit:
+                    break
+            if len(matches) >= collection_limit:
+                break
+
+        matches_truncated = len(matches) > limit
+        visible_matches = matches[:limit]
+        truncated = bool(matches_truncated or not source_complete)
+        continuation_reasons: list[str] = []
+        if matches_truncated:
+            continuation_reasons.append("Narrow the query or search a more specific path or section.")
+        if not source_complete:
+            continuation_reasons.append("The document extractor reached its source limit; do not treat zero matches as proof of absence.")
+        return {
+            "ok": True,
+            "path": str(document.get("path") or document.get("real_path") or ""),
+            "source_format": document.get("source_format") or "text_utf8",
+            "query": normalized_query,
+            "searched_variants": variants,
+            "match_count": len(visible_matches),
+            "returned_count": len(visible_matches),
+            "total_matches": None if truncated else len(visible_matches),
+            "max_matches": limit,
+            "matches": visible_matches,
+            "searched_chars": int(document.get("searched_chars") or len(text)),
+            "total_length": int(document.get("total_length") or len(text)),
+            "truncated": truncated,
+            "has_more": truncated,
+            "source_complete": source_complete,
+            "source_truncated": not source_complete,
+            "search_complete": not truncated,
+            "continuation": (
+                {"strategy": "refine_or_convert", "message": " ".join(continuation_reasons)}
+                if continuation_reasons
+                else None
+            ),
+            "note": (
+                "Search was run over extracted document text. "
+                "If match_count=0, only conclude that the current extracted text did not show a hit."
+            ),
+        }
+
     def _search_contents_in_file_impl(
         self,
         path: str,
@@ -7245,159 +7599,15 @@ class LocalToolExecutor:
         context_chars: int = 280,
     ) -> dict[str, Any]:
         try:
-            normalized_query = _normalize_search_query(query)
-            if not normalized_query:
-                return {"ok": False, "error": "query is empty"}
-
-            variants = _expand_search_variants(normalized_query)
-            limit = max(1, min(20, int(max_matches)))
-            window = max(40, min(2000, int(context_chars)))
-            matches: list[dict[str, Any]] = []
-            collection_limit = limit + 1
-
-            real_path = self._resolve_source_path(path)
-            if not real_path.exists():
-                return {"ok": False, "error": f"Path not found: {path}"}
-            if not real_path.is_file():
-                return {"ok": False, "error": f"Not a file: {path}"}
-
-            if _looks_like_pdf_path(real_path):
-                pages = extract_pdf_page_texts_from_path(real_path)
-                for variant in variants:
-                    pattern = _build_search_pattern(variant)
-                    if pattern is None:
-                        continue
-                    for page_num, body in pages:
-                        for found in pattern.finditer(body):
-                            span = found.span()
-                            start = max(0, span[0] - window)
-                            end = min(len(body), span[1] + window)
-                            matches.append(
-                                {
-                                    "query_variant": variant,
-                                    "matched_text": found.group(0),
-                                    "start_char": span[0],
-                                    "end_char": span[1],
-                                    "page_hint": page_num,
-                                    "context": body[start:end].strip(),
-                                    "read_hint": {
-                                        "page_hint": page_num,
-                                        "start_char": max(0, span[0] - 2000),
-                                        "max_chars": 6000,
-                                    },
-                                }
-                            )
-                            if len(matches) >= collection_limit:
-                                break
-                        if len(matches) >= collection_limit:
-                            break
-                    if len(matches) >= collection_limit:
-                        break
-
-                matches_truncated = len(matches) > limit
-                visible_matches = matches[:limit]
-                return {
-                    "ok": True,
-                    "path": str(real_path),
-                    "source_format": "pdf_text_extracted",
-                    "query": normalized_query,
-                    "searched_variants": variants,
-                    "match_count": len(visible_matches),
-                    "returned_count": len(visible_matches),
-                    "total_matches": None if matches_truncated else len(visible_matches),
-                    "max_matches": limit,
-                    "matches": visible_matches,
-                    "truncated": matches_truncated,
-                    "has_more": matches_truncated,
-                    "source_complete": True,
-                    "source_truncated": False,
-                    "search_complete": not matches_truncated,
-                    "continuation": (
-                        {"strategy": "refine_query", "message": "Narrow the query or search a more specific document section."}
-                        if matches_truncated
-                        else None
-                    ),
-                    "note": (
-                        "Search was run page-by-page over extracted PDF text. "
-                        "If match_count=0, only conclude that the current extracted PDF text did not show a hit."
-                    ),
-                }
-
-            base = self._read_searchable_text(path=path, real_path=real_path)
-            if not bool(base.get("ok")):
-                return base
-
-            text = str(base.get("content") or "")
-            source_complete = bool(base.get("source_complete", True))
-            seen_spans: list[tuple[int, int]] = []
-            for variant in variants:
-                pattern = _build_search_pattern(variant)
-                if pattern is None:
-                    continue
-                for found in pattern.finditer(text):
-                    span = found.span()
-                    if any(_spans_overlap(span, prior) for prior in seen_spans):
-                        continue
-                    seen_spans.append(span)
-
-                    start = max(0, span[0] - window)
-                    end = min(len(text), span[1] + window)
-                    page_hint = _page_hint_for_offset(text, span[0])
-                    matches.append(
-                        {
-                            "query_variant": variant,
-                            "matched_text": found.group(0),
-                            "start_char": span[0],
-                            "end_char": span[1],
-                            "page_hint": page_hint,
-                            "context": text[start:end].strip(),
-                            "read_hint": {
-                                "start_char": max(0, span[0] - 2000),
-                                "max_chars": 6000,
-                            },
-                        }
-                    )
-                    if len(matches) >= collection_limit:
-                        break
-                if len(matches) >= collection_limit:
-                    break
-
-            matches_truncated = len(matches) > limit
-            visible_matches = matches[:limit]
-            truncated = bool(matches_truncated or not source_complete)
-            continuation_reasons: list[str] = []
-            if matches_truncated:
-                continuation_reasons.append("Narrow the query or search a more specific path or section.")
-            if not source_complete:
-                continuation_reasons.append("The document extractor reached its source limit; do not treat zero matches as proof of absence.")
-            return {
-                "ok": True,
-                "path": str(base.get("path") or real_path),
-                "source_format": base.get("source_format") or "text_utf8",
-                "query": normalized_query,
-                "searched_variants": variants,
-                "match_count": len(visible_matches),
-                "returned_count": len(visible_matches),
-                "total_matches": None if truncated else len(visible_matches),
-                "max_matches": limit,
-                "matches": visible_matches,
-                "searched_chars": int(base.get("searched_chars") or len(text)),
-                "total_length": int(base.get("total_length") or len(text)),
-                "truncated": truncated,
-                "has_more": truncated,
-                "source_complete": source_complete,
-                "source_truncated": not source_complete,
-                "search_complete": not truncated,
-                "continuation": (
-                    {"strategy": "refine_or_convert", "message": " ".join(continuation_reasons)}
-                    if continuation_reasons
-                    else None
-                ),
-                "note": (
-                    "Search was run over extracted document text. "
-                    "If match_count=0, only conclude that the current extracted text did not show a hit."
-                ),
-            }
+            document = self._load_searchable_document(path=path)
+            if not bool(document.get("ok")):
+                return document
+            return self._search_loaded_document(
+                document,
+                query=query,
+                max_matches=max_matches,
+                context_chars=context_chars,
+            )
         except Exception as exc:
             return {"ok": False, "error": f"search_contents_in_file failed: {exc}"}
 
@@ -7407,6 +7617,7 @@ class LocalToolExecutor:
         queries: list[str],
         per_query_max_matches: int = 3,
         context_chars: int = 280,
+        max_total_matches: int = 0,
     ) -> dict[str, Any]:
         try:
             cleaned_queries = [_normalize_search_query(item) for item in (queries or []) if str(item or "").strip()]
@@ -7419,9 +7630,14 @@ class LocalToolExecutor:
             merged: list[dict[str, Any]] = []
             seen: set[tuple[Any, ...]] = set()
             query_results: list[dict[str, Any]] = []
+            document = self._load_searchable_document(path=path)
+            if not bool(document.get("ok")):
+                return document
+            total_limit = max(0, int(max_total_matches or 0))
+            stopped_early = False
             for query in visible_queries:
-                result = self._search_contents_in_file_impl(
-                    path=path,
+                result = self._search_loaded_document(
+                    document,
                     query=query,
                     max_matches=max(1, min(10, int(per_query_max_matches))),
                     context_chars=context_chars,
@@ -7451,19 +7667,26 @@ class LocalToolExecutor:
                         continue
                     seen.add(key)
                     merged.append(match)
+                    if total_limit and len(merged) >= total_limit:
+                        stopped_early = True
+                        break
+                if stopped_early:
+                    break
 
             truncated = bool(
                 queries_truncated
+                or stopped_early
                 or any(bool(item.get("truncated")) for item in query_results)
             )
-            source_complete = all(bool(item.get("source_complete", True)) for item in query_results)
+            source_complete = bool(document.get("source_complete", True))
             return {
                 "ok": True,
                 "path": str(self._resolve_source_path(path)),
                 "queries": visible_queries,
                 "requested_query_count": requested_query_count,
-                "searched_query_count": len(visible_queries),
+                "searched_query_count": len(query_results),
                 "queries_truncated": queries_truncated,
+                "search_stopped_early": stopped_early,
                 "query_results": query_results,
                 "match_count": len(merged),
                 "returned_count": len(merged),
@@ -7476,7 +7699,11 @@ class LocalToolExecutor:
                 "continuation": (
                     {
                         "strategy": "split_queries_or_refine",
-                        "message": "Retry omitted queries separately or narrow queries whose result reports has_more=true.",
+                        "message": (
+                            "The global result limit was reached; narrow the queries or raise the evidence limit."
+                            if stopped_early
+                            else "Retry omitted queries separately or narrow queries whose result reports has_more=true."
+                        ),
                     }
                     if truncated
                     else None
@@ -7745,16 +7972,17 @@ class LocalToolExecutor:
             query_list = [_normalize_search_query(item) for item in (queries or []) if str(item or "").strip()]
             if not query_list:
                 query_list = _derive_fact_check_queries(cleaned_claim)
+            evidence_limit = max(1, min(12, int(max_evidence)))
             search = self._search_contents_in_file_multi_impl(
                 path=path,
                 queries=query_list,
                 per_query_max_matches=max(1, min(6, int(max_evidence))),
                 context_chars=220,
+                max_total_matches=evidence_limit + 1,
             )
             if not bool(search.get("ok")):
                 return search
 
-            evidence_limit = max(1, min(12, int(max_evidence)))
             all_evidence = list(search.get("matches") or [])
             evidence = all_evidence[:evidence_limit]
             evidence_truncated = len(all_evidence) > len(evidence)
@@ -7794,11 +8022,44 @@ class LocalToolExecutor:
         except Exception as exc:
             return {"ok": False, "error": f"fact_check_file failed: {exc}"}
 
+    def search_files(self, query: str, root: str = ".", max_results: int = 20,
+                     refresh: bool = False) -> dict[str, Any]:
+        try:
+            query = str(query or "").strip()
+            if not query or len(query) > 256:
+                return {"ok": False, "error_kind": "invalid_arguments", "error": "query must contain 1 to 256 characters"}
+            real_root = self._resolve_path(root)
+            if not real_root.is_dir():
+                return {"ok": False, "error_kind": "not_a_directory", "error": f"Not a directory: {root}"}
+            # A running shell can still create paths after its initial return.
+            with self._command_sessions_lock:
+                commands_running = any(session["proc"].poll() is None for session in self._command_sessions.values())
+            if commands_running:
+                self._filename_search.invalidate()
+            result = self._filename_search.search(
+                real_root, query, max(1, min(100, int(max_results))),
+                refresh=bool(refresh), cancelled=self._current_cancel_requested,
+            )
+            display_root = self._current_project_root()
+            for item in result["matches"]:
+                # Revalidate cached paths against today's permission boundary.
+                path = self._resolve_path(str(real_root / item["path"]))
+                item["resolved_path"] = str(path)
+                item["path"] = _display_resolved_search_path(path, project_root=display_root, cwd=real_root)
+            root_payload = _path_payload(real_root, project_root=self._current_project_root(), cwd=Path(self._current_cwd_hint()))
+            result.update(root=root_payload["path"], root_ref=root_payload["root_ref"], resolved_root=str(real_root))
+            result["search_scope"] = {"hidden_files": False, "symlinks": False,
+                                      "ignore_files": [".gitignore", ".ignore", ".rgignore"],
+                                      "note": "VP mutations invalidate snapshots lazily. Use refresh=true after external filesystem/ignore changes. Git global excludes are not loaded."}
+            return result
+        except Exception as exc:
+            return {"ok": False, "error": f"search_files failed: {exc}"}
+
     def search_codebase(
         self, query: str, root: str = ".", max_matches: int = 20,
         file_glob: str = "", use_regex: bool = False, case_sensitive: bool = False,
     ) -> dict[str, Any]:
-        from app.code_search import MAX_FILE_BYTES, SKIP_DIRS, run_search
+        from app.code_search import MAX_FILE_BYTES, MAX_MATCH_TEXT_CHARS, SKIP_DIRS, run_search
 
         try:
             cleaned_query = str(query or "").strip()
@@ -7820,25 +8081,25 @@ class LocalToolExecutor:
                 terminate=self._terminate_command_process_tree,
             )
             matches = payload["matches"]
-            content_paths = {item["resolved_path"]: item for item in matches if item.get("match_type") != "path"}
-            combined = []
-            for item in matches:
-                if item.get("match_type") != "path":
-                    continue
-                content = content_paths.get(item["resolved_path"])
-                if content is not None:
-                    content["match_type"] = "path_and_content"
-                else:
-                    combined.append(item)
-            combined = [*combined,
-                        *(item for item in matches if item.get("match_type") == "path_and_content"),
-                        *(item for item in matches if not item.get("match_type"))]
-            visible = combined[:limit]
+            visible = matches[:limit]
+            display_root = self._current_project_root()
+            remaining_text = 16000
             for item in visible:
-                path = Path(item["resolved_path"])
-                item["path"] = _display_model_path(path, project_root=self._current_project_root(), cwd=real_root)
+                path = Path(item["resolved_path"]).resolve()
+                item["path"] = _display_resolved_search_path(path, project_root=display_root, cwd=real_root)
+                text = item.get("text", "")
+                if len(text) > remaining_text:
+                    item["text_truncated"] = True
+                    item["text"] = text[:remaining_text]
+                remaining_text -= len(item.get("text", ""))
+            output_truncated = any(item.get("text_truncated") for item in visible)
             reason = payload.get("stop_reason", "")
-            incomplete = bool(reason or payload.get("skipped_files") or len(combined) > limit)
+            size_limited = bool(payload.get("size_limit_applied"))
+            if not reason and size_limited:
+                reason = "size_limit"
+            if not reason and output_truncated:
+                reason = "output_limit"
+            incomplete = bool(reason or payload.get("skipped_files") or len(matches) > limit or output_truncated)
             root_payload = _path_payload(real_root, project_root=self._current_project_root(), cwd=Path(self._current_cwd_hint()))
             result = {
                 "ok": reason not in {"cancelled", "worker_failed"},
@@ -7847,14 +8108,21 @@ class LocalToolExecutor:
                 "match_count": len(visible), "returned_count": len(visible),
                 "total_matches": None if incomplete else len(visible),
                 "max_matches": limit, "matches": visible,
-                "path_match_count": sum(bool(item.get("match_type")) for item in combined),
-                "content_match_count": sum(item.get("match_type") != "path" for item in combined),
-                "returned_path_match_count": sum(bool(item.get("match_type")) for item in visible),
-                "returned_content_match_count": sum(item.get("match_type") != "path" for item in visible),
+                "content_match_count": len(matches),
+                "returned_content_match_count": len(visible),
                 "parser_mode": "json" if rg else "python_fallback",
+                "execution_mode": "direct_rg" if rg else "isolated_python",
                 "duration_ms": payload.get("duration_ms", 0),
                 "stop_reason": reason, "skipped_files": payload.get("skipped_files", 0),
+                "size_limit_applied": size_limited,
+                "size_limit_policy": "conservative_unknown" if rg else "observed_skips",
+                "size_skipped_files": payload.get("size_skipped_files"),
+                "max_file_bytes": MAX_FILE_BYTES,
+                "output_truncated": output_truncated,
+                "max_match_text_chars": MAX_MATCH_TEXT_CHARS, "max_output_text_chars": 16000,
                 "search_scope": {"excluded_directories": sorted(SKIP_DIRS), "max_file_bytes": MAX_FILE_BYTES,
+                                 "excluded_runtime_paths": payload.get("runtime_excluded_paths", []),
+                                 "size_limit_note": "rg cannot report the number omitted by its size cap; completeness is conservatively unknown when that cap is active.",
                                  "note": "Results cover eligible text files; specify an excluded directory as root to search it."},
                 "truncated": incomplete, "has_more": incomplete,
                 "source_complete": not incomplete, "search_complete": not incomplete,
@@ -7865,6 +8133,13 @@ class LocalToolExecutor:
             if reason in {"cancelled", "worker_failed"}:
                 result["error_kind"] = "cancelled" if reason == "cancelled" else "search_failed"
                 result["error"] = payload.get("error") or ("Search cancelled by user." if reason == "cancelled" else "Search worker exited without a result.")
+            elif reason == "size_limit":
+                result["continuation"] = {
+                    "strategy": "inspect_size_limited_files",
+                    "message": "Files over max_file_bytes may be unsearched. Inspect suspected large files with read_file or search_contents_in_file and check those tools' completeness; narrowing this query alone does not remove the size cap.",
+                }
+            elif reason == "output_limit":
+                result["continuation"] = {"strategy": "read_matching_files", "message": "Match text was truncated. Read the indicated file and line for complete evidence."}
             return result
         except Exception as exc:
             return {"ok": False, "error": f"search_codebase failed: {exc}"}

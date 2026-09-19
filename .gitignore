@@ -19,6 +19,8 @@ app/data/session_backups/*
 app/data/runs/*
 !app/data/runs/.gitkeep
 app/data/turn_traces/*
+app/data/tool_results/
+app/data/subagents/
 !app/data/turn_traces/.gitkeep
 app/data/session_meta/*
 !app/data/session_meta/.gitkeep

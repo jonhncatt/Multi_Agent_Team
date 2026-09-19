@@ -102,6 +102,7 @@ _READ_ONLY_TOOL_NAMES = {
     "table_extract",
     "fact_check_file",
     "search_codebase",
+    "search_files",
     "web_search",
     "web_fetch",
     "image_read",
@@ -1684,6 +1685,44 @@ class VintageProgrammerRuntime:
             "summary": message,
         }
 
+    def _parallel_read_results(self, calls, *, runnable_tools, locale, runtime_boundary, attachments, on_started=None):
+        """Execute an all-read batch after validation; preserve task-local capabilities."""
+        safe = {"read_file", "list_dir", "glob_file_search", "search_codebase", "search_files",
+                "search_contents_in_file", "search_contents_in_file_multi"}
+        if len(calls) < 2 or any(normalize_tool_name(str(c.get("name") or "")) not in safe for c in calls):
+            return {}
+        validations = [self._validate_model_tool_call(
+            call=call, runnable_tools=runnable_tools, locale=locale,
+            runtime_boundary=runtime_boundary, attachments=attachments,
+        ) for call in calls]
+        if any(not v.allowed or v.tool_name not in safe for v in validations):
+            return {}
+        tools = self._backend.tools
+        local = getattr(tools, "_runtime_ctx", None)
+        if not isinstance(local, threading.local):
+            return {}
+        context = dict(vars(local))
+        if on_started is not None:
+            on_started(len(calls))
+
+        def execute(validation):
+            vars(local).update(context)
+            started = time.monotonic()
+            try:
+                if tools._current_cancel_requested():
+                    result = self._tool_cancelled_result(validation.tool_name, "")
+                else:
+                    result = tools.execute(validation.tool_name, dict(validation.normalized_arguments or {}))
+            except Exception as exc:
+                result = self._structured_tool_error_result(validation.tool_name, exc)
+            finally:
+                vars(local).clear()
+            return result, max(0, int((time.monotonic() - started) * 1000))
+
+        with ThreadPoolExecutor(max_workers=min(4, len(calls)), thread_name_prefix="vp-read") as pool:
+            futures = [pool.submit(execute, v) for v in validations]
+            return {index: future.result() for index, future in enumerate(futures, start=1)}
+
     def _execute_tool_with_trace(
         self,
         *,
@@ -1708,6 +1747,7 @@ class VintageProgrammerRuntime:
         spec: VintageProgrammerSpec,
         round_idx: int,
         call_idx: int,
+        preexecuted: tuple[dict[str, Any], int] | None = None,
     ) -> tuple[dict[str, Any], ToolEvent]:
         tool_schema = dict((self._tool_specs_by_name.get(name) or {}).get("parameters") or {})
         tool_audit = build_tool_argument_audit(name, arguments, tool_schema, locale=locale)
@@ -1741,10 +1781,12 @@ class VintageProgrammerRuntime:
         )
         started_at = time.monotonic()
         try:
-            result = self._backend.tools.execute(name, arguments)
+            result = preexecuted[0] if preexecuted is not None else self._backend.tools.execute(name, arguments)
         except Exception as exc:
             result = self._structured_tool_error_result(name, exc)
         duration_ms = max(0, int((time.monotonic() - started_at) * 1000))
+        if preexecuted is not None:
+            duration_ms = preexecuted[1]
         event = self._build_tool_event(
             name=name,
             arguments=arguments,
@@ -2479,7 +2521,7 @@ class VintageProgrammerRuntime:
         payload = dict(result or {}) if isinstance(result, dict) else {}
         if tool_name in {"read_file", "read_section"}:
             return str(arguments.get("path") or payload.get("path") or "").strip()
-        if tool_name in {"search_contents_in_file", "search_contents_in_file_multi", "search_codebase"}:
+        if tool_name in {"search_contents_in_file", "search_contents_in_file_multi", "search_codebase", "search_files"}:
             query = arguments.get("query")
             if query in ("", None):
                 queries = list(arguments.get("queries") or [])
@@ -2654,7 +2696,7 @@ class VintageProgrammerRuntime:
                 detail=str(arguments.get("pattern") or ""),
             )
 
-        if name in {"search_contents_in_file", "search_contents_in_file_multi", "search_codebase", "web_search"}:
+        if name in {"search_contents_in_file", "search_contents_in_file_multi", "search_codebase", "search_files", "web_search"}:
             hits = cls._tool_result_items(payload, "matches", "results")
             seen = tracker.setdefault("search_hits", set())
             new_hits = 0
@@ -6974,6 +7016,18 @@ class VintageProgrammerRuntime:
                     visible=False,
                     trace_events=trace_events,
                 )
+                parallel_results = {}
+                if not (stop_after_tools or halt_for_user_input or self._cancel_requested(context_payload)):
+                    parallel_results = self._parallel_read_results(
+                        tool_calls, runnable_tools=runnable_tools, locale=locale,
+                        runtime_boundary=turn_runtime_boundary, attachments=attachment_metas,
+                        on_started=lambda count: self._emit_trace(
+                            progress_cb, run_id=run_id, type="tool.batch.started",
+                            title="Parallel local reads", detail=f"Running {count} validated read-only calls with up to 4 workers.",
+                            status="running", payload={"tool_count": count, "max_workers": 4},
+                            trace_events=trace_events,
+                        ),
+                    )
                 for call_idx, call in enumerate(tool_calls, start=1):
                     raw_name = str(call.get("raw_name") or call.get("name") or "").strip()
                     raw_arguments = call.get("raw_args")
@@ -7251,6 +7305,7 @@ class VintageProgrammerRuntime:
                     plan_state_before = [dict(item) for item in list(plan_state or []) if isinstance(item, dict)]
                     if validation.allowed:
                         result, event = self._execute_tool_with_trace(
+                            preexecuted=parallel_results.get(call_idx),
                             name=name,
                             arguments=arguments,
                             raw_tool_call=raw_tool_call_payload,

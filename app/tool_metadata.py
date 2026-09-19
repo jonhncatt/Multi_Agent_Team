@@ -262,6 +262,22 @@ TOOL_METADATA: dict[str, dict[str, Any]] = {
         "risk": "low",
         "summary": "read one matched section",
     },
+    "search_files": {
+        "group": "file",
+        "source": "native",
+        "read_only": True,
+        "requires_evidence": True,
+        "requires": {
+            "workspace_read": True,
+            "workspace_write": False,
+            "shell": False,
+            "network": False,
+            "browser": False,
+            "optional_dependency": [],
+        },
+        "risk": "low",
+        "summary": "fuzzy filename and path search",
+    },
     "search_codebase": {
         "group": "file",
         "source": "native",

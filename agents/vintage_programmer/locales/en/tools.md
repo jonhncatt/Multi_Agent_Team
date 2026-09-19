@@ -8,7 +8,9 @@
 
 ## Local Workspace
 
-- Use `list_dir` for directory structure, `glob_file_search` for path or filename patterns, and `search_codebase` for repo-wide code search.
+- Use `list_dir` for directory structure, `search_files` for fuzzy filenames/paths (e.g. `vprb` or `runtime backend`), `glob_file_search` for exact glob patterns, and `search_codebase` for file contents only. Filename search reuses a snapshot: pass `refresh: true` after external filesystem/ignore changes. Retry if `walk_complete` is false; incomplete results never prove absence. Searches stay within the requested root; choose another root explicitly when needed.
+- `glob_file_search` excludes hidden, Git-ignored and dependency files by default; set `include_ignored: true` when needed. Batch independent local reads and searches in one response; all-read batches run with up to four workers.
+- VP's own file mutations automatically invalidate filename snapshots; the next search rebuilds lazily. Manual `refresh` is needed for external changes. Content search excludes VP runtime-generated evidence by default; explicitly target that subtree to inspect it. With rg's size cap enabled, completeness is conservatively unknown (`size_limit`), not proof of absence.
 - Use `read_file` for small files or full context; use `search_contents_in_file` for known-file search and `search_contents_in_file_multi` for multiple keywords.
 - When a tool response contains `truncated` and `result_ref`, continue the original result with `read_tool_result`; do not rerun the original tool merely to recover omitted output, especially for side-effecting commands.
 - Use `read_section`, `table_extract`, and `fact_check_file` for sections, tables, and file fact checks.

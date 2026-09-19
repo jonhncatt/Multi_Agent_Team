@@ -11,7 +11,7 @@ from typing import Any, Callable, Literal
 from pydantic import BaseModel, Field
 
 from app.attachments import image_to_data_url_with_meta
-from app.config import AppConfig, get_access_roots, normalize_openai_base_url
+from app.config import AppConfig, normalize_openai_base_url
 from app.local_tools import (
     APPLY_PATCH_ARGUMENT_DESCRIPTION,
     APPLY_PATCH_TOOL_DESCRIPTION,
@@ -123,6 +123,7 @@ class SearchContentsInFileMultiArgs(BaseModel):
 
 
 class GlobFileSearchArgs(BaseModel):
+    include_ignored: bool = Field(default=False, description="Include hidden, ignored and dependency files.")
     pattern: str = Field(description="Glob pattern such as `**/*.cpp`; use a narrower pattern on large trees.")
     path: str = Field(default=".", description="Directory root under an allowed read root.")
     max_results: int = Field(default=200, ge=1, le=500, description="Maximum matching file paths.")
@@ -149,6 +150,13 @@ class FactCheckFileArgs(BaseModel):
     claim: str = Field(description="Claim to investigate; the heuristic verdict still requires model judgment.")
     queries: list[str] = Field(default_factory=list, description="Optional explicit evidence-search phrases.")
     max_evidence: int = Field(default=6, ge=1, le=12, description="Maximum evidence snippets returned.")
+
+
+class SearchFilesArgs(BaseModel):
+    query: str = Field(min_length=1, max_length=256, description="Fuzzy filename or path, e.g. vprb or runtime backend.")
+    root: str = Field(default=".", description="Directory root under an allowed read root.")
+    max_results: int = Field(default=20, ge=1, le=100, description="Maximum ranked filename matches returned.")
+    refresh: bool = Field(default=False, description="Rebuild after external filesystem or ignore changes; VP mutations already invalidate snapshots lazily.")
 
 
 class SearchCodebaseArgs(BaseModel):
@@ -910,8 +918,14 @@ class VPRuntimeBackend:
                 func=self._fact_check_file_tool,
             ),
             self._StructuredTool.from_function(
+                name="search_files",
+                description="Fuzzy filename/path search using a reusable progressive snapshot. VP mutations invalidate automatically; check walk_complete and refresh after external changes. Does not search contents.",
+                args_schema=SearchFilesArgs,
+                func=self._search_files_tool,
+            ),
+            self._StructuredTool.from_function(
                 name="search_codebase",
-                description="Search code or text files under a local root and return structured file, line, and text matches.",
+                description="Search file contents only under a local root. Use search_files for fuzzy filenames and glob_file_search for exact patterns.",
                 args_schema=SearchCodebaseArgs,
                 func=self._search_codebase_tool,
             ),
@@ -1640,9 +1654,9 @@ class VPRuntimeBackend:
     def _list_dir_tool(self, path: str = ".", max_entries: int = 200, offset: int = 0) -> str:
         return json.dumps(self.tools.list_dir(path=path, max_entries=max_entries, offset=offset), ensure_ascii=False)
 
-    def _glob_file_search_tool(self, pattern: str, path: str = ".", max_results: int = 200, offset: int = 0) -> str:
+    def _glob_file_search_tool(self, pattern: str, path: str = ".", max_results: int = 200, offset: int = 0, include_ignored: bool = False) -> str:
         return json.dumps(
-            self.tools.glob_file_search(pattern=pattern, path=path, max_results=max_results, offset=offset),
+            self.tools.glob_file_search(pattern=pattern, path=path, max_results=max_results, offset=offset, include_ignored=include_ignored),
             ensure_ascii=False,
         )
 
@@ -1699,6 +1713,10 @@ class VPRuntimeBackend:
             ensure_ascii=False,
         )
 
+    def _search_files_tool(self, query: str, root: str = ".", max_results: int = 20,
+                           refresh: bool = False) -> str:
+        return json.dumps(self.tools.search_files(query, root, max_results, refresh), ensure_ascii=False)
+
     def _search_codebase_tool(
         self,
         query: str,
@@ -1716,41 +1734,6 @@ class VPRuntimeBackend:
             use_regex=use_regex,
             case_sensitive=case_sensitive,
         )
-        base_root = str(root or ".").strip() or "."
-        try:
-            base_match_count = int((result or {}).get("match_count") or len((result or {}).get("matches") or []))
-        except Exception:
-            base_match_count = 0
-        if bool((result or {}).get("ok")) and base_match_count <= 0 and base_root in {"", "."} and not bool(file_glob.strip()) and bool(str(query or "").strip()):
-            searched_roots: list[str] = [str((result or {}).get("root") or base_root)]
-            for candidate in get_access_roots(self.config):
-                candidate_root = str(candidate)
-                if candidate_root in searched_roots:
-                    continue
-                extra = self.tools.search_codebase(
-                    query=query,
-                    root=candidate_root,
-                    max_matches=max_matches,
-                    file_glob=file_glob,
-                    use_regex=use_regex,
-                    case_sensitive=case_sensitive,
-                )
-                searched_roots.append(str((extra or {}).get("root") or candidate_root))
-                try:
-                    extra_match_count = int((extra or {}).get("match_count") or len((extra or {}).get("matches") or []))
-                except Exception:
-                    extra_match_count = 0
-                if bool((extra or {}).get("ok")) and extra_match_count > 0:
-                    merged = dict(extra)
-                    merged["auto_root_fallback"] = True
-                    merged["initial_root"] = "."
-                    merged["searched_roots"] = searched_roots
-                    return json.dumps(merged, ensure_ascii=False)
-            if isinstance(result, dict):
-                result = dict(result)
-                result["auto_root_fallback"] = True
-                result["initial_root"] = "."
-                result["searched_roots"] = searched_roots
         return json.dumps(result, ensure_ascii=False)
 
     def _content_to_text(self, content: Any) -> str:

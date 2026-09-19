@@ -17,6 +17,7 @@ CANONICAL_TOOL_NAMES = {
     "search_contents_in_file_multi",
     "read_section",
     "search_codebase",
+    "search_files",
     "table_extract",
     "fact_check_file",
     "web_search",

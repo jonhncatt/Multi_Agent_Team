@@ -951,6 +951,7 @@ def _events_support_step(step_kind: str, events: list[dict[str, Any]]) -> bool:
                 "search_contents_in_file",
                 "search_contents_in_file_multi",
                 "search_codebase",
+                "search_files",
                 "list_dir",
                 "glob_file_search",
                 "table_extract",

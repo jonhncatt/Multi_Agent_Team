@@ -39,6 +39,7 @@ _READ_PATH_FIELDS: dict[str, tuple[str, ...]] = {
     "read_file": ("path",),
     "glob_file_search": ("path",),
     "search_codebase": ("path", "root"),
+    "search_files": ("root",),
     "search_contents_in_file": ("path",),
     "search_contents_in_file_multi": ("path",),
     "read_section": ("path",),
@@ -70,6 +71,7 @@ _DANGEROUS_COMMAND_PATTERNS = (
 _REDACTION_PLACEHOLDER_FIELDS: dict[str, tuple[str, ...]] = {
     "glob_file_search": ("pattern", "path"),
     "search_codebase": ("query", "file_glob", "root"),
+    "search_files": ("query", "root"),
     "search_contents_in_file": ("query", "path"),
     "search_contents_in_file_multi": ("queries", "path"),
     "read_file": ("path",),
