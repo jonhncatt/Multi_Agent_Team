@@ -154,7 +154,7 @@ workbench_store = WorkbenchStore(
     agent_dir=AGENT_DIR,
 )
 _BACKEND_STARTUP_TIMER.mark("workbench_initialized")
-APP_VERSION = "3.1.6C1"
+APP_VERSION = "3.1.7"
 DESKTOP_CONTROL_TOKEN_PATH = Path(__file__).resolve().parent / "data" / "runtime" / "desktop-control-token"
 DESKTOP_EXIT_GRACE_SEC = 5.0
 app_update_manager = AppUpdateManager(app_dir=Path(__file__).resolve().parent.parent)
