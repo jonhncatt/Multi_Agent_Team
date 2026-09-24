@@ -647,6 +647,10 @@ def windows_taskbar_relaunch_metadata(
     if is_frozen:
         launcher_path = Path(executable or sys.executable).expanduser().resolve()
         relaunch_parts = [str(launcher_path)]
+        # The packaged launcher already contains the complete multi-size icon.
+        # Keep the taskbar icon tied to that executable instead of switching to
+        # a checkout-relative ICO that Windows may fail to resolve later.
+        icon_path = launcher_path
     else:
         relaunch_parts = [
             *config.python_command,
@@ -655,32 +659,30 @@ def windows_taskbar_relaunch_metadata(
             "--project-root",
             str(config.project_root),
         ]
-    shell_icon_path = (
-        config.project_root
-        / "desktop"
-        / "windows"
-        / "assets"
-        / "validation_assistant_shell_v1.ico"
-    ).resolve()
-    web_icon_path = (
-        config.project_root / "app" / "static" / "assets" / "validation_assistant.ico"
-    ).resolve()
-    build_icon_path = (
-        config.project_root
-        / "desktop"
-        / "windows"
-        / "assets"
-        / "validation_assistant.ico"
-    ).resolve()
-    icon_path = (
-        shell_icon_path
-        if shell_icon_path.is_file()
-        else web_icon_path
-        if web_icon_path.is_file()
-        else build_icon_path
-    )
-    if not icon_path.is_file() and is_frozen:
-        icon_path = launcher_path
+        shell_icon_path = (
+            config.project_root
+            / "desktop"
+            / "windows"
+            / "assets"
+            / "validation_assistant_shell_v1.ico"
+        ).resolve()
+        web_icon_path = (
+            config.project_root / "app" / "static" / "assets" / "validation_assistant.ico"
+        ).resolve()
+        build_icon_path = (
+            config.project_root
+            / "desktop"
+            / "windows"
+            / "assets"
+            / "validation_assistant.ico"
+        ).resolve()
+        icon_path = (
+            shell_icon_path
+            if shell_icon_path.is_file()
+            else web_icon_path
+            if web_icon_path.is_file()
+            else build_icon_path
+        )
     return {
         "app_id": WINDOWS_APP_USER_MODEL_ID,
         "relaunch_command": subprocess.list2cmdline([str(item) for item in relaunch_parts]),
