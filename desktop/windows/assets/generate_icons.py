@@ -12,9 +12,11 @@ SHELL_ICON_FILENAME = "validation_assistant_shell.ico"
 ICON_PIXEL_SIZES = (16, 20, 24, 32, 40, 48, 64, 128, 256)
 ICON_SIZES = tuple((size, size) for size in ICON_PIXEL_SIZES)
 WEB_ICON_SIZES = (16, 32, 48, 64)
-TASKBAR_MAX_SIZE = 64
-TASKBAR_ORANGE = (247, 91, 30)
-TASKBAR_MARK = (255, 250, 244)
+# The imported artwork occupies about 84% of its square canvas. Windows does
+# not add compensating scale for that transparent padding, so it looks smaller
+# than neighboring icons such as Chrome. A modest optical zoom brings the
+# visible rounded square to about 91% while retaining a safe antialiased edge.
+DISPLAY_ARTWORK_SCALE = 1.08
 
 
 def _remove_connected_background(source: Image.Image) -> Image.Image:
@@ -71,56 +73,36 @@ def load_master(asset_dir: Path) -> Image.Image:
     return Image.open(master_path).convert("RGBA")
 
 
-def build_taskbar_master(master: Image.Image) -> Image.Image:
-    """Flatten soft artwork so the VA mark stays legible at taskbar sizes."""
+def build_display_master(master: Image.Image) -> Image.Image:
+    """Apply the optical scale used by Windows, Chrome, and the web UI."""
 
-    # The source artwork intentionally has gradients, glow, and a soft shadow.
-    # Those details look good at large sizes but turn into a fuzzy fringe when
-    # Chrome asks Windows for a 16-64 px favicon. Preserve the original shape
-    # while reducing the small rendition to two high-contrast brand colors.
-    shape = master.getchannel("A").point(
-        lambda value: 0
-        if value < 24
-        else 255
-        if value > 232
-        else round((value - 24) * 255 / 208)
+    width, height = master.size
+    scaled_size = (
+        round(width * DISPLAY_ARTWORK_SCALE),
+        round(height * DISPLAY_ARTWORK_SCALE),
     )
-    mark = master.getchannel("B").point(
-        lambda value: 0
-        if value < 96
-        else 255
-        if value > 210
-        else round((value - 96) * 255 / 114)
-    )
-    mark = ImageChops.multiply(mark, shape)
-
-    taskbar_master = Image.new("RGBA", master.size, (*TASKBAR_ORANGE, 0))
-    taskbar_master.putalpha(shape)
-    foreground = Image.new("RGBA", master.size, (*TASKBAR_MARK, 0))
-    foreground.putalpha(mark)
-    taskbar_master.alpha_composite(foreground)
-    return taskbar_master
+    scaled = master.resize(scaled_size, Image.Resampling.LANCZOS)
+    left = (scaled.width - width) // 2
+    top = (scaled.height - height) // 2
+    return scaled.crop((left, top, left + width, top + height))
 
 
 def render_icon_frame(
     master: Image.Image,
     size: int,
-    *,
-    taskbar_master: Image.Image | None = None,
 ) -> Image.Image:
-    if size <= TASKBAR_MAX_SIZE:
-        source = taskbar_master or build_taskbar_master(master)
-    else:
-        source = master
-    return source.resize((size, size), Image.Resampling.LANCZOS)
+    # Keep the original yellow-orange-red gradient at every native ICO size.
+    # The previous two-color small rendition made Chrome's title-bar icon look
+    # unrelated to the full application artwork.
+    return master.resize((size, size), Image.Resampling.LANCZOS)
 
 
 def write_derived_icons(master: Image.Image, asset_dir: Path) -> None:
-    png = master.resize((512, 512), Image.Resampling.LANCZOS)
+    display_master = build_display_master(master)
+    png = display_master.resize((512, 512), Image.Resampling.LANCZOS)
     png.save(asset_dir / "validation_assistant.png", optimize=True)
-    taskbar_master = build_taskbar_master(master)
     icon_frames = [
-        render_icon_frame(master, size, taskbar_master=taskbar_master)
+        render_icon_frame(display_master, size)
         for size in ICON_PIXEL_SIZES
     ]
     icon_path = asset_dir / "validation_assistant.ico"
@@ -146,7 +128,7 @@ def write_derived_icons(master: Image.Image, asset_dir: Path) -> None:
     web_asset_dir.mkdir(parents=True, exist_ok=True)
     png.save(web_asset_dir / "validation_assistant.png", optimize=True)
     for size in WEB_ICON_SIZES:
-        render_icon_frame(master, size, taskbar_master=taskbar_master).save(
+        render_icon_frame(display_master, size).save(
             web_asset_dir / f"validation_assistant_{size}.png",
             optimize=True,
         )
