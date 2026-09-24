@@ -34,7 +34,9 @@ def test_display_icon_is_optically_larger_than_the_imported_master() -> None:
     master_fill = (master_bbox[2] - master_bbox[0]) / 1024
     display_fill = (display_bbox[2] - display_bbox[0]) / 512
     assert master_fill < 0.86
-    assert 0.90 <= display_fill <= 0.94
+    # Match the previous VP icon, whose rounded background filled 93.75% of
+    # the 512 px canvas at its solid alpha edge.
+    assert 0.93 <= display_fill <= 0.96
 
 
 def test_small_taskbar_frames_match_web_icons_and_preserve_gradient() -> None:

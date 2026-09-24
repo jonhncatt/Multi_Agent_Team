@@ -14,9 +14,9 @@ ICON_SIZES = tuple((size, size) for size in ICON_PIXEL_SIZES)
 WEB_ICON_SIZES = (16, 32, 48, 64)
 # The imported artwork occupies about 84% of its square canvas. Windows does
 # not add compensating scale for that transparent padding, so it looks smaller
-# than neighboring icons such as Chrome. A modest optical zoom brings the
-# visible rounded square to about 91% while retaining a safe antialiased edge.
-DISPLAY_ARTWORK_SCALE = 1.08
+# than neighboring icons. This optical zoom matches the previous VP icon's
+# 93.75% background fill while retaining a safe antialiased edge.
+DISPLAY_ARTWORK_SCALE = 1.12
 
 
 def _remove_connected_background(source: Image.Image) -> Image.Image:
