@@ -32,8 +32,8 @@ window. If the Chrome window was closed while the backend remained active, a new
 window is opened against that same backend instead.
 
 The launcher assigns the Chrome App window and the launcher a shared Windows
-AppUserModelID. The finalized v1.0.0 icon uses a new v1 taskbar identity and a
-versioned icon-resource filename so Windows cannot reuse the smaller icon cached
+AppUserModelID. The finalized v1.0.0 icon uses an icon-revision taskbar identity
+and a standalone multi-size ICO so Windows cannot reuse invalid metadata cached
 from development builds. Unpin the old VA taskbar item, launch the new
 `ValidationAssistant.exe`, then pin the running VA window. That one-time re-pin
 stores the VA relaunch command and high-resolution icon; later launches still go
