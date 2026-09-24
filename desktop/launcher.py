@@ -21,7 +21,10 @@ from urllib.request import Request, urlopen
 from uuid import UUID
 
 APP_TITLE = "Validation Assistant"
-WINDOWS_APP_USER_MODEL_ID = "ValidationAssistant.Desktop"
+# The v1 suffix gives the finalized v1.0.0 artwork a fresh Windows taskbar
+# identity. Earlier development builds reused the unsuffixed ID while their
+# icon changed repeatedly, so pinned shortcuts can retain a stale small icon.
+WINDOWS_APP_USER_MODEL_ID = "ValidationAssistant.Desktop.V1"
 DEFAULT_APP_MODULE = "app.main:app"
 DEFAULT_APP_PORT = 8080
 DEFAULT_STARTUP_TIMEOUT_SEC = 45.0
@@ -657,7 +660,7 @@ def windows_taskbar_relaunch_metadata(
         / "desktop"
         / "windows"
         / "assets"
-        / "validation_assistant_shell.ico"
+        / "validation_assistant_shell_v1.ico"
     ).resolve()
     web_icon_path = (
         config.project_root / "app" / "static" / "assets" / "validation_assistant.ico"

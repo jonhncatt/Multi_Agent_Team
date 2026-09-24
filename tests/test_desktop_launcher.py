@@ -252,7 +252,7 @@ def test_windows_taskbar_identity_relaunches_the_packaged_va_launcher(tmp_path: 
         / "desktop"
         / "windows"
         / "assets"
-        / "validation_assistant_shell.ico"
+        / "validation_assistant_shell_v1.ico"
     )
     icon.parent.mkdir(parents=True)
     icon.write_bytes(b"ico")
@@ -279,6 +279,7 @@ def test_windows_taskbar_identity_relaunches_the_packaged_va_launcher(tmp_path: 
         "display_name": APP_TITLE,
         "icon_resource": f"{icon.resolve()},0",
     }
+    assert WINDOWS_APP_USER_MODEL_ID == "ValidationAssistant.Desktop.V1"
 
 
 def test_windows_taskbar_identity_binds_the_chrome_window_to_the_launcher(tmp_path: Path) -> None:

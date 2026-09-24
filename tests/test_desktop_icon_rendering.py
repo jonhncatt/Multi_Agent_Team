@@ -84,7 +84,7 @@ def test_small_taskbar_frames_match_web_icons_and_preserve_gradient() -> None:
 def test_shell_icon_preserves_gradient_at_every_windows_size() -> None:
     asset_dir = REPO_ROOT / "desktop" / "windows" / "assets"
 
-    with Image.open(asset_dir / "validation_assistant_shell.ico") as icon:
+    with Image.open(asset_dir / "validation_assistant_shell_v1.ico") as icon:
         small = icon.ico.getimage((32, 32)).convert("RGBA")
         large = icon.ico.getimage((256, 256)).convert("RGBA")
 
@@ -94,6 +94,9 @@ def test_shell_icon_preserves_gradient_at_every_windows_size() -> None:
     assert large_colors is not None
     assert len(small_colors) > 300
     assert len(large_colors) > 1_000
-    assert small.getchannel("A").point(
+    small_bbox = small.getchannel("A").point(
         lambda value: 255 if value >= 128 else 0
-    ).getbbox() is not None
+    ).getbbox()
+    assert small_bbox is not None
+    assert small_bbox[2] - small_bbox[0] >= 30
+    assert small_bbox[3] - small_bbox[1] >= 30

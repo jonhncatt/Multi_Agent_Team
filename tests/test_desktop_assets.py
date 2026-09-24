@@ -39,7 +39,7 @@ def _png_size(path: Path) -> tuple[int, int]:
 def test_windows_build_embeds_multisize_va_icon_without_webview2() -> None:
     asset_dir = REPO_ROOT / "desktop" / "windows" / "assets"
     icon = (asset_dir / "validation_assistant.ico").read_bytes()
-    shell_icon = (asset_dir / "validation_assistant_shell.ico").read_bytes()
+    shell_icon = (asset_dir / "validation_assistant_shell_v1.ico").read_bytes()
     png = (asset_dir / "validation_assistant.png").read_bytes()
     master = (asset_dir / "validation_assistant_master.png").read_bytes()
     web_png = (
@@ -74,8 +74,8 @@ def test_windows_build_embeds_multisize_va_icon_without_webview2() -> None:
     assert int.from_bytes(icon[4:6], "little") == 9
     assert shell_icon[:4] == b"\x00\x00\x01\x00"
     assert int.from_bytes(shell_icon[4:6], "little") == 9
-    assert "--icon desktop\\windows\\assets\\validation_assistant_shell.ico" in build_script
-    assert "--icon desktop/windows/assets/validation_assistant_shell.ico" in workflow
+    assert "--icon desktop\\windows\\assets\\validation_assistant_shell_v1.ico" in build_script
+    assert "--icon desktop/windows/assets/validation_assistant_shell_v1.ico" in workflow
     assert "verify_executable_icon.py dist\\ValidationAssistant.exe" in build_script
     assert "verify_executable_icon.py dist/ValidationAssistant.exe" in workflow
     assert "Start-Process" in workflow
@@ -109,7 +109,7 @@ def test_windows_icon_contains_native_frames_for_small_taskbar_sizes() -> None:
 
 def test_windows_shell_icon_uses_legacy_dib_frames_for_explorer_compatibility() -> None:
     shell_icon = (
-        REPO_ROOT / "desktop" / "windows" / "assets" / "validation_assistant_shell.ico"
+        REPO_ROOT / "desktop" / "windows" / "assets" / "validation_assistant_shell_v1.ico"
     ).read_bytes()
 
     assert _ico_frames(shell_icon) == {

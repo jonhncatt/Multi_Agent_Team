@@ -25,7 +25,7 @@ if (-not (Test-Path $Python)) {
     --clean `
     --onefile `
     --noconsole `
-    --icon desktop\windows\assets\validation_assistant_shell.ico `
+    --icon desktop\windows\assets\validation_assistant_shell_v1.ico `
     --add-data "desktop\windows\assets\validation_assistant.ico;desktop\windows\assets" `
     --name ValidationAssistant `
     desktop\launcher.py

@@ -8,7 +8,7 @@ from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageOps
 
 CANVAS_SIZE = 1024
 MASTER_FILENAME = "validation_assistant_master.png"
-SHELL_ICON_FILENAME = "validation_assistant_shell.ico"
+SHELL_ICON_FILENAME = "validation_assistant_shell_v1.ico"
 ICON_PIXEL_SIZES = (16, 20, 24, 32, 40, 48, 64, 128, 256)
 ICON_SIZES = tuple((size, size) for size in ICON_PIXEL_SIZES)
 WEB_ICON_SIZES = (16, 32, 48, 64)
