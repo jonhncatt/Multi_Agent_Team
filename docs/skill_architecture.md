@@ -8,10 +8,10 @@ Skills are independent of concrete agents and the active business project:
 
 ```text
 skills/builtin/<skill>/SKILL.md   # product-maintained, read-only
-skills/team/<skill>/SKILL.md      # team-maintained, distributed through VP Git
+skills/team/<skill>/SKILL.md      # team-maintained, distributed through VA Git
 ```
 
-Both catalogs are globally discoverable. Built-in/Team describes ownership and mutability, not which Agent may use a Skill. The current Vintage Programmer runtime loads both. `SkillRegistry.enabled_skills(agent_id, capabilities)` is the extension point for future capability filtering without moving or copying files.
+Both catalogs are globally discoverable. Built-in/Team describes ownership and mutability, not which Agent may use a Skill. The current Validation Assistant runtime loads both. `SkillRegistry.enabled_skills(agent_id, capabilities)` is the extension point for future capability filtering without moving or copying files.
 
 Canonical keys are:
 
@@ -60,7 +60,7 @@ Bundled scripts use the same `exec_command` path as project commands. Runtime va
 - Built-in Skill source is read-only through Runtime and Workbench APIs.
 - Team Skill creation or complete `SKILL.md` replacement can use `save_skill`; existing Team `SKILL.md`, `scripts/`, and `references/` use ordinary `apply_patch`. Team is editable; only Built-in is read-only.
 - The model supplies a logical name and content, never a destination path.
-- Registry root is derived from the Vintage Programmer installation, not `VP_WORKSPACE_ROOT`, current project, or current working directory.
+- Registry root is derived from the Validation Assistant installation, not `VA_WORKSPACE_ROOT`, current project, or current working directory.
 - Ordinary writes always reject Built-in and project-level `.agents/skills`, `.codex/skills`, and legacy `workspace/skills` destinations. When the Runtime permission profile allows workspace writes, enabled Team Skill directories join the writable boundary. The model decides from the full thread whether a write serves the user's task; the Harness does not parse natural-language intent or negation. Direct execution of scripts in enabled Skill directories is allowed through the normal command boundary.
 - Team and Built-in cannot silently share a name.
 
@@ -82,7 +82,7 @@ The index is a disposable metadata cache. Built-in enabled overrides are user ru
 Legacy sources are detected at startup:
 
 ```text
-agents/vintage_programmer/skills/
+agents/validation_assistant/skills/
 workspace/skills/
 ```
 
@@ -91,10 +91,10 @@ Known replaced product Skills are skipped. Other valid legacy Skills are copied 
 ## Team Contribution
 
 1. After upgrading an older checkout, run `python scripts/migrate_skills.py --json` and resolve any reported conflicts.
-2. Create or update the Team Skill through VP Skill management.
+2. Create or update the Team Skill through VA Skill management.
 3. Run `python scripts/validate_skills.py`.
 4. Review the Git diff, including references and scripts.
-5. Commit and push the Vintage Programmer branch.
+5. Commit and push the Validation Assistant branch.
 6. Merge through GitLab review; coworkers receive it on pull/update.
 
 The validator checks strict schema, duplicate names, suspected credentials/private keys, personal absolute paths, and excessive body size.

@@ -3,7 +3,7 @@ from __future__ import annotations
 from app.config import load_config
 from app.local_tools import LocalToolExecutor
 from app.tool_metadata import TOOL_METADATA, get_tool_metadata, metadata_missing_names
-from app.vintage_programmer_runtime import _READ_ONLY_TOOL_NAMES
+from app.validation_assistant_runtime import _READ_ONLY_TOOL_NAMES
 
 
 _ALLOWED_GROUPS = {

@@ -15,17 +15,17 @@ def test_local_tool_executor_exposes_canonical_tools() -> None:
     assert "browser_open" in tool_names
 
 
-def test_vintage_programmer_tool_docs_only_expose_canonical_file_tool_names() -> None:
+def test_validation_assistant_tool_docs_only_expose_canonical_file_tool_names() -> None:
     repo_root = Path(__file__).resolve().parents[2]
     tool_docs = (
-        repo_root / "agents" / "vintage_programmer" / "locales" / "en" / "tools.md",
-        repo_root / "agents" / "vintage_programmer" / "locales" / "ja-JP" / "tools.md",
-        repo_root / "agents" / "vintage_programmer" / "locales" / "zh-CN" / "tools.md",
+        repo_root / "agents" / "validation_assistant" / "locales" / "en" / "tools.md",
+        repo_root / "agents" / "validation_assistant" / "locales" / "ja-JP" / "tools.md",
+        repo_root / "agents" / "validation_assistant" / "locales" / "zh-CN" / "tools.md",
     )
     agent_specs = (
-        repo_root / "agents" / "vintage_programmer" / "locales" / "en" / "agent.md",
-        repo_root / "agents" / "vintage_programmer" / "locales" / "ja-JP" / "agent.md",
-        repo_root / "agents" / "vintage_programmer" / "locales" / "zh-CN" / "agent.md",
+        repo_root / "agents" / "validation_assistant" / "locales" / "en" / "agent.md",
+        repo_root / "agents" / "validation_assistant" / "locales" / "ja-JP" / "agent.md",
+        repo_root / "agents" / "validation_assistant" / "locales" / "zh-CN" / "agent.md",
     )
 
     for path in tool_docs:
@@ -50,7 +50,7 @@ def test_skill_maintenance_is_data_not_an_activated_workflow_in_every_locale() -
 
     for locale, marker in expected.items():
         content = (
-            repo_root / "agents" / "vintage_programmer" / "locales" / locale / "tools.md"
+            repo_root / "agents" / "validation_assistant" / "locales" / locale / "tools.md"
         ).read_text(encoding="utf-8")
         assert marker in content
         assert "exec_command" in content

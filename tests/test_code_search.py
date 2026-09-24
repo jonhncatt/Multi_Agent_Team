@@ -204,8 +204,8 @@ def test_direct_rg_owned_process_is_killed_on_stop(tmp_path, monkeypatch, stop):
 
 def test_backend_does_not_implicitly_search_other_roots():
     from types import SimpleNamespace
-    from app.vp_runtime_backend import VPRuntimeBackend
-    backend = object.__new__(VPRuntimeBackend)
+    from app.va_runtime_backend import VARuntimeBackend
+    backend = object.__new__(VARuntimeBackend)
     calls = []
     def no_matches(**kwargs):
         calls.append(kwargs)
@@ -215,9 +215,9 @@ def test_backend_does_not_implicitly_search_other_roots():
     assert len(calls) == 1 and calls[0]["root"] == "."
 
 
-def _vp_markers(root):
-    for name in ("app/local_tools.py", "app/vintage_programmer_runtime.py",
-                 "project_profiles/builtin/vintage-programmer/AGENTS.md"):
+def _va_markers(root):
+    for name in ("app/local_tools.py", "app/validation_assistant_runtime.py",
+                 "project_profiles/builtin/validation-assistant/AGENTS.md"):
         path = root / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.touch()
@@ -225,7 +225,7 @@ def _vp_markers(root):
 
 @pytest.mark.parametrize("rg", [False, True])
 @pytest.mark.parametrize("gitignore", [False, True])
-def test_vp_runtime_evidence_excluded_but_explicit_root_allowed(tmp_path, monkeypatch, rg, gitignore):
+def test_va_runtime_evidence_excluded_but_explicit_root_allowed(tmp_path, monkeypatch, rg, gitignore):
     if rg and not shutil.which("rg"):
         pytest.skip("rg not installed")
     if gitignore:
@@ -233,7 +233,7 @@ def test_vp_runtime_evidence_excluded_but_explicit_root_allowed(tmp_path, monkey
             pytest.skip("git not installed")
         subprocess.run(["git", "init", str(tmp_path)], check=True, capture_output=True)
         (tmp_path / ".gitignore").write_text("app/data/\n", encoding="utf-8")
-    _vp_markers(tmp_path)
+    _va_markers(tmp_path)
     tools = _search(tmp_path, monkeypatch, rg=rg)
     for name in ("app/data/tool_results/history.txt", "app/data/subagents/history.txt", "src/data/source.txt", "data/real.txt"):
         path = tmp_path / name
@@ -249,7 +249,7 @@ def test_vp_runtime_evidence_excluded_but_explicit_root_allowed(tmp_path, monkey
 
 
 @pytest.mark.parametrize("rg", [False, True])
-def test_non_vp_project_data_paths_remain_searchable(tmp_path, monkeypatch, rg):
+def test_non_va_project_data_paths_remain_searchable(tmp_path, monkeypatch, rg):
     if rg and not shutil.which("rg"):
         pytest.skip("rg not installed")
     tools = _search(tmp_path, monkeypatch, rg=rg)

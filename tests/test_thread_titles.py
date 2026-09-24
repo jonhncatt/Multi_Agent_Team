@@ -6,7 +6,7 @@ from app.thread_titles import (
     is_generic_thread_title,
     sanitize_generated_thread_title,
 )
-from app.vintage_programmer_runtime import VintageProgrammerRuntime
+from app.validation_assistant_runtime import ValidationAssistantRuntime
 
 
 def test_sanitize_generated_thread_title_removes_model_formatting() -> None:
@@ -77,7 +77,7 @@ def test_runtime_thread_title_call_is_isolated_and_has_no_tools() -> None:
                 "llm_calls": 1,
             }
 
-    runtime = VintageProgrammerRuntime.__new__(VintageProgrammerRuntime)
+    runtime = ValidationAssistantRuntime.__new__(ValidationAssistantRuntime)
     runtime._backend = _Backend()
 
     result = runtime.generate_thread_title(

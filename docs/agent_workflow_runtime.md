@@ -16,7 +16,7 @@
 
 - `spawn_subagent` 是普通模型工具。是否使用、委派什么任务由主模型决定，不存在关键词路由。
 - `spawn_subagent` 只负责启动并立即返回 id；独立任务可以先后启动并在后台并行执行。主 Agent 通过 `wait_subagents` 等待全部或指定结果，不再把一次子任务阻塞成同步工具调用。
-- 默认每个主 Turn 最多同时运行 3 个子 Agent，可用 `VP_MAX_CONCURRENT_SUBAGENTS` 在 1–8 之间调整。Turn 结束前 Runtime 会收束其子线程，不留下孤儿任务。
+- 默认每个主 Turn 最多同时运行 3 个子 Agent，可用 `VA_MAX_CONCURRENT_SUBAGENTS` 在 1–8 之间调整。Turn 结束前 Runtime 会收束其子线程，不留下孤儿任务。
 - 子上下文不继承主 Thread 历史，只接收自包含任务、当前项目、附件和 RuntimeBoundary。
 - 内置角色定义独立存放在 `agents/builtin/*.toml`，当前提供 `explorer`、`tester`、`analyst`、`summarizer`。每个角色有不同说明和工具白名单；本轮不增加 `agents/team/`。
 - 子 Agent 没有 `spawn_subagent`、`wait_subagents`、`apply_patch`、`save_skill` 或用户询问工具；工作区写入能力关闭。只有 `tester` 角色包含命令工具，用于聚焦测试，且仍不能通过命令修改工作区。
@@ -34,8 +34,8 @@
 ## 主 Thread 并发
 
 - 不同主 Thread 共用全局运行队列，默认最多同时执行 `5` 条。
-- `VP_MAX_CONCURRENT_RUNS` 可在 `1–32` 之间覆盖默认值；超过容量的运行保留在队列中，获得槽位后继续。
-- 该限制与每个主 Turn 的 `VP_MAX_CONCURRENT_SUBAGENTS` 独立，不会把五个主 Thread 误算成五个子 Agent。
+- `VA_MAX_CONCURRENT_RUNS` 可在 `1–32` 之间覆盖默认值；超过容量的运行保留在队列中，获得槽位后继续。
+- 该限制与每个主 Turn 的 `VA_MAX_CONCURRENT_SUBAGENTS` 独立，不会把五个主 Thread 误算成五个子 Agent。
 
 ## 外部写入边界
 

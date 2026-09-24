@@ -8,7 +8,7 @@ from app.runtime_boundary import RuntimeBoundary, build_turn_runtime_boundary
 from app.runtime_contract import RuntimeContract, build_full_auto_runtime_contract
 from app.models import ChatSettings
 from app.serialization import dump_model
-from app.vintage_programmer_runtime import VintageProgrammerRuntime
+from app.validation_assistant_runtime import ValidationAssistantRuntime
 
 
 class _FakeTools:
@@ -161,7 +161,7 @@ def test_full_access_expands_runtime_boundary_without_environment_flag(tmp_path:
 def test_runtime_context_uses_supplied_runtime_boundary(tmp_path: Path) -> None:
     config = load_config()
     config.workspace_root = tmp_path
-    runtime = VintageProgrammerRuntime(config=config, kernel_runtime=object(), agent_dir=tmp_path, backend=_FakeBackend())
+    runtime = ValidationAssistantRuntime(config=config, kernel_runtime=object(), agent_dir=tmp_path, backend=_FakeBackend())
     boundary = build_turn_runtime_boundary(
         config=config,
         runtime_contract=RuntimeContract(shell_allowed=False, network_allowed=False),

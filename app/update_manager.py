@@ -68,7 +68,7 @@ def default_command_runner(argv: Sequence[str], cwd: Path, timeout_sec: int) -> 
 
 
 class AppUpdateManager:
-    """Updater for the Vintage Programmer repository's active branch/upstream."""
+    """Updater for the Validation Assistant repository's active branch/upstream."""
 
     def __init__(
         self,

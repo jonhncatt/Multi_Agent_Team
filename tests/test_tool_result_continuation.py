@@ -9,7 +9,7 @@ from app.context_meter import count_tokens
 from app.local_tools import LocalToolExecutor
 from app.storage import SessionStore
 from app.tool_result_store import ToolResultStore
-from app.vintage_programmer_runtime import VintageProgrammerRuntime
+from app.validation_assistant_runtime import ValidationAssistantRuntime
 
 
 class _ToolMessage:
@@ -28,9 +28,9 @@ class _Backend:
 
 
 def _config(monkeypatch, tmp_path: Path, *, token_limit: int = 512):
-    monkeypatch.setenv("VP_SKIP_DOTENV", "1")
-    monkeypatch.setenv("VP_WORKSPACE_ROOT", str(tmp_path))
-    monkeypatch.setenv("VP_TOOL_OUTPUT_TOKEN_LIMIT", str(token_limit))
+    monkeypatch.setenv("VA_SKIP_DOTENV", "1")
+    monkeypatch.setenv("VA_WORKSPACE_ROOT", str(tmp_path))
+    monkeypatch.setenv("VA_TOOL_OUTPUT_TOKEN_LIMIT", str(token_limit))
     return load_config()
 
 
@@ -38,10 +38,10 @@ def test_large_tool_result_is_token_bounded_and_resumable_without_rerun(monkeypa
     config = _config(monkeypatch, tmp_path)
     tools = LocalToolExecutor(config)
     tools.set_runtime_context(session_id="thread-one", run_id="run-one", model="gpt-5.6-sol")
-    runtime = VintageProgrammerRuntime(
+    runtime = ValidationAssistantRuntime(
         config=config,
         kernel_runtime=object(),
-        agent_dir=tmp_path / "agents" / "vintage_programmer",
+        agent_dir=tmp_path / "agents" / "validation_assistant",
         backend=_Backend(tools),
     )
     result: dict[str, Any] = {
@@ -110,10 +110,10 @@ def test_small_tool_result_does_not_create_sidecar(monkeypatch, tmp_path: Path) 
     config = _config(monkeypatch, tmp_path, token_limit=10_000)
     tools = LocalToolExecutor(config)
     tools.set_runtime_context(session_id="thread-one", run_id="run-one", model="gpt-5.6-sol")
-    runtime = VintageProgrammerRuntime(
+    runtime = ValidationAssistantRuntime(
         config=config,
         kernel_runtime=object(),
-        agent_dir=tmp_path / "agents" / "vintage_programmer",
+        agent_dir=tmp_path / "agents" / "validation_assistant",
         backend=_Backend(tools),
     )
 

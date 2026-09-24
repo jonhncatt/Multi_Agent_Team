@@ -208,7 +208,7 @@ class FilenameSearch:
                 while len(self._corpora) > MAX_CACHED_ROOTS:
                     _, old = self._corpora.popitem(last=False)
                     old.stop.set()
-                threading.Thread(target=_walk, args=(corpus,), daemon=True, name="vp-filename-walker").start()
+                threading.Thread(target=_walk, args=(corpus,), daemon=True, name="va-filename-walker").start()
             else:
                 corpus = self._corpora[root]
                 self._corpora.move_to_end(root)
@@ -244,7 +244,7 @@ class FilenameSearch:
         while not acquired and not cancelled() and time.monotonic() < deadline:
             acquired = self._match_slots.acquire(timeout=0.02)
         if acquired:
-            threading.Thread(target=match, daemon=True, name="vp-filename-matcher").start()
+            threading.Thread(target=match, daemon=True, name="va-filename-matcher").start()
             while not done.wait(0.02):
                 if cancelled() or time.monotonic() >= deadline:
                     stop.set()

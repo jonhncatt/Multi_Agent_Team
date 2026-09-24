@@ -49,7 +49,7 @@ def test_structured_compaction_summary_omits_raw_trace() -> None:
         ],
         task_state={"goal": "实现 transcript", "status": "in_progress"},
         work_cursor={"active_files": ["app/main.py"]},
-        modified_files=["app/vintage_programmer_runtime.py"],
+        modified_files=["app/validation_assistant_runtime.py"],
     )
     summary = build_structured_compaction_summary(compaction_input)
     encoded = json.dumps(dump_model(summary), ensure_ascii=False)

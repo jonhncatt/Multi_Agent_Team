@@ -1567,7 +1567,7 @@ class LocalToolExecutor:
                 image = ImageEnhance.Contrast(image).enhance(1.35)
                 notes.append("contrast_enhanced")
 
-                with tempfile.NamedTemporaryFile(prefix="vp_ocr_", suffix=".png", delete=False) as handle:
+                with tempfile.NamedTemporaryFile(prefix="va_ocr_", suffix=".png", delete=False) as handle:
                     temp_path = Path(handle.name)
                 image.save(temp_path, format="PNG", optimize=True)
 
@@ -3528,10 +3528,10 @@ class LocalToolExecutor:
             project_root = cwd
         env.update(
             {
-                "VP_SKILL_ROOT": str(skill_context.get("skill_root") or ""),
-                "VP_SKILL_SCRIPT": str(skill_context.get("script_path") or ""),
-                "VP_PROJECT_ROOT": str(project_root),
-                "VP_PROJECT_CWD": str(cwd.resolve()),
+                "VA_SKILL_ROOT": str(skill_context.get("skill_root") or ""),
+                "VA_SKILL_SCRIPT": str(skill_context.get("script_path") or ""),
+                "VA_PROJECT_ROOT": str(project_root),
+                "VA_PROJECT_CWD": str(cwd.resolve()),
             }
         )
         return env
@@ -4129,7 +4129,7 @@ class LocalToolExecutor:
             {
                 "type": "function",
                 "name": "search_files",
-                "description": "Fuzzy filename/path lookup (e.g. vprb or runtime backend), not content search. VP writes invalidate snapshots lazily; use refresh after external filesystem changes. Incomplete walks are not evidence of absence.",
+                "description": "Fuzzy filename/path lookup (e.g. varb or runtime backend), not content search. VA writes invalidate snapshots lazily; use refresh after external filesystem changes. Incomplete walks are not evidence of absence.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -8050,7 +8050,7 @@ class LocalToolExecutor:
             result.update(root=root_payload["path"], root_ref=root_payload["root_ref"], resolved_root=str(real_root))
             result["search_scope"] = {"hidden_files": False, "symlinks": False,
                                       "ignore_files": [".gitignore", ".ignore", ".rgignore"],
-                                      "note": "VP mutations invalidate snapshots lazily. Use refresh=true after external filesystem/ignore changes. Git global excludes are not loaded."}
+                                      "note": "VA mutations invalidate snapshots lazily. Use refresh=true after external filesystem/ignore changes. Git global excludes are not loaded."}
             return result
         except Exception as exc:
             return {"ok": False, "error": f"search_files failed: {exc}"}

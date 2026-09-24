@@ -202,7 +202,7 @@ def main():
               "tree_note": "Frozen tree plus shared runtime ignore rules. The same on-disk tree and arguments serve both versions. Eligibility diagnostic compares glob/ignore file membership; file-size caps/binary behavior remain visible in actual argv/results.",
               "content": {}, "filenames": {}, "cold_filenames": {}}
     rng = random.Random(args.seed)
-    with tempfile.TemporaryDirectory(prefix="vp-search-benchmark-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="va-search-benchmark-") as temporary:
         work = Path(temporary)
         versions = {"baseline": work / "baseline", "current": work / "current"}
         archive_ref(repository, baseline, versions["baseline"])
@@ -229,7 +229,7 @@ def main():
         large = work / "large 测试 tree with spaces"
         large.mkdir()
         for index in range(args.large_files):
-            target = large / f"packages/pkg_{index // 100:04d}/vp_runtime_backend_{index:05d}.py"
+            target = large / f"packages/pkg_{index // 100:04d}/va_runtime_backend_{index:05d}.py"
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text("def sample(): return 1\n", encoding="utf-8")
         for name in ("测试文件.py", "日本語.txt", "folder with spaces/foo.py"):
@@ -256,14 +256,14 @@ def main():
             for label, tree in (("repository", root), ("large", large)):
                 report["cold_filenames"][label] = {}
                 for name, driver in drivers.items():
-                    cold = driver.call({"tool": "search_files", "root": str(tree), "arguments": {"query": "vprb", "refresh": True, "max_results": 20}})
+                    cold = driver.call({"tool": "search_files", "root": str(tree), "arguments": {"query": "varb", "refresh": True, "max_results": 20}})
                     walk = driver.call({"action": "wait_walk", "root": str(tree)})
                     report["cold_filenames"][label][name] = {"initial": cold, "finished_walk": walk}
                 if not all(item["finished_walk"]["walk_complete"] for item in report["cold_filenames"][label].values()):
                     report["filenames"][label] = {"skipped": "walk incomplete; no warm speed claim"}
                     continue
                 report["filenames"][label] = {}
-                for query in ("v", "vp", "vpr", "vprb"):
+                for query in ("v", "va", "var", "varb"):
                     report["filenames"][label][query] = cohort(drivers, tree, "search_files", {"query": query, "max_results": 20, "refresh": False},
                         warmup=args.warmup, rounds=args.rounds, rng=rng, profiles=args.profiles)
             report["implementations"] = {name: driver.call({"action": "identity"}) for name, driver in drivers.items()}

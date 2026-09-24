@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "suite": "vintage_programmer_agent_quality",
+  "suite": "validation_assistant_agent_quality",
   "description": "Live Agent quality baseline covering C-style implementation, multi-file analysis, and Markdown delivery.",
   "cases": [
     {

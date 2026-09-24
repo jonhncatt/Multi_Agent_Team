@@ -20,8 +20,8 @@ from urllib.parse import quote
 from urllib.request import Request, urlopen
 from uuid import UUID
 
-APP_TITLE = "Vintage Programmer"
-WINDOWS_APP_USER_MODEL_ID = "VintageProgrammer.Desktop"
+APP_TITLE = "Validation Assistant"
+WINDOWS_APP_USER_MODEL_ID = "ValidationAssistant.Desktop"
 DEFAULT_APP_MODULE = "app.main:app"
 DEFAULT_APP_PORT = 8080
 DEFAULT_STARTUP_TIMEOUT_SEC = 45.0
@@ -29,7 +29,7 @@ DEFAULT_INITIAL_WINDOW_SIZE = (1360, 840)
 DEFAULT_DESKTOP_UI_SCALE = 0.8
 DEFAULT_LAUNCHER_LOG_MAX_BYTES = 2 * 1024 * 1024
 DEFAULT_TASKBAR_IDENTITY_TIMEOUT_SEC = 20.0
-DESKTOP_INSTANCE_MUTEX = "Local\\VintageProgrammer.Desktop"
+DESKTOP_INSTANCE_MUTEX = "Local\\ValidationAssistant.Desktop"
 DESKTOP_CONTROL_TOKEN_FILENAME = "desktop-control-token"
 DESKTOP_PREPARING_FILENAME = "desktop-preparing.html"
 DESKTOP_PREPARING_STATE_FILENAME = "desktop-preparing-state.js"
@@ -105,13 +105,13 @@ class DesktopLaunchConfig:
 
     @property
     def desktop_url(self) -> str:
-        return f"{self.app_url}/?vp_desktop=1&vp_scale={self.ui_scale:g}"
+        return f"{self.app_url}/?va_desktop=1&va_scale={self.ui_scale:g}"
 
     @property
     def chrome_desktop_url(self) -> str:
-        base = f"{self.desktop_url}&vp_host=chrome"
+        base = f"{self.desktop_url}&va_host=chrome"
         token = str(self.desktop_control_token or "").strip()
-        return f"{base}#vp_control={quote(token, safe='')}" if token else base
+        return f"{base}#va_control={quote(token, safe='')}" if token else base
 
     @property
     def health_url(self) -> str:
@@ -135,7 +135,7 @@ class DesktopLaunchConfig:
 
     @property
     def window_initialized_marker(self) -> Path:
-        return self.browser_profile_dir / ".vp-window-initialized"
+        return self.browser_profile_dir / ".va-window-initialized"
 
     def diagnostics(self) -> dict[str, object]:
         payload = asdict(self)
@@ -166,7 +166,7 @@ def resolve_project_root(
         resolved = Path(explicit_root).expanduser().resolve()
         if not _looks_like_project_root(resolved):
             raise LauncherError(
-                f"The configured project root is not a Vintage Programmer checkout: {resolved}"
+                f"The configured project root is not a Validation Assistant checkout: {resolved}"
             )
         return resolved
 
@@ -183,8 +183,8 @@ def resolve_project_root(
         return candidate
     expected = ", ".join(str(marker).replace("\\", "/") for marker in PROJECT_ROOT_MARKERS)
     raise LauncherError(
-        f"VintageProgrammer.exe must be in the Vintage Programmer repository root: {candidate}. "
-        f"Expected files: {expected}. To bind another explicit location, set VP_DESKTOP_PROJECT_ROOT."
+        f"ValidationAssistant.exe must be in the Validation Assistant repository root: {candidate}. "
+        f"Expected files: {expected}. To bind another explicit location, set VA_DESKTOP_PROJECT_ROOT."
     )
 
 
@@ -214,7 +214,7 @@ def read_dotenv(path: Path) -> dict[str, str]:
 
 
 def _dotenv_path(project_root: Path, env: Mapping[str, str]) -> Path:
-    configured = str(env.get("VP_DOTENV_PATH") or "").strip()
+    configured = str(env.get("VA_DOTENV_PATH") or "").strip()
     if not configured:
         return project_root / ".env"
     candidate = Path(configured).expanduser()
@@ -224,9 +224,9 @@ def _dotenv_path(project_root: Path, env: Mapping[str, str]) -> Path:
 
 
 def _setting(key: str, *, env: Mapping[str, str], dotenv: Mapping[str, str], default: str = "") -> str:
-    # app.config intentionally lets repository .env values override VP_* process values.
+    # app.config intentionally lets repository .env values override VA_* process values.
     # Matching that behavior keeps the launcher's port and the server's port identical.
-    if key.startswith("VP_") and key in dotenv:
+    if key.startswith("VA_") and key in dotenv:
         return str(dotenv[key]).strip()
     return str(env.get(key, default) or default).strip()
 
@@ -243,17 +243,17 @@ def parse_window_size(raw: str) -> tuple[int, int]:
     parts = [item.strip() for item in normalized.split(",")]
     if len(parts) != 2:
         raise LauncherError(
-            f"VP_DESKTOP_INITIAL_WINDOW_SIZE must look like 1360,840, got: {raw}"
+            f"VA_DESKTOP_INITIAL_WINDOW_SIZE must look like 1360,840, got: {raw}"
         )
     try:
         width, height = (int(item) for item in parts)
     except ValueError as exc:
         raise LauncherError(
-            f"VP_DESKTOP_INITIAL_WINDOW_SIZE must contain two integers, got: {raw}"
+            f"VA_DESKTOP_INITIAL_WINDOW_SIZE must contain two integers, got: {raw}"
         ) from exc
     if width < 900 or height < 600 or width > 7680 or height > 4320:
         raise LauncherError(
-            "VP_DESKTOP_INITIAL_WINDOW_SIZE must be between 900x600 and 7680x4320."
+            "VA_DESKTOP_INITIAL_WINDOW_SIZE must be between 900x600 and 7680x4320."
         )
     return width, height
 
@@ -262,9 +262,9 @@ def parse_ui_scale(raw: str) -> float:
     try:
         scale = float(str(raw or "").strip())
     except ValueError as exc:
-        raise LauncherError(f"VP_DESKTOP_UI_SCALE must be numeric, got: {raw}") from exc
+        raise LauncherError(f"VA_DESKTOP_UI_SCALE must be numeric, got: {raw}") from exc
     if scale < 0.65 or scale > 1.25:
-        raise LauncherError("VP_DESKTOP_UI_SCALE must be between 0.65 and 1.25.")
+        raise LauncherError("VA_DESKTOP_UI_SCALE must be between 0.65 and 1.25.")
     return scale
 
 
@@ -272,8 +272,8 @@ def validate_chrome_shell_mode(raw: str) -> None:
     mode = str(raw or "auto").strip().lower()
     if mode not in {"auto", "chrome"}:
         raise LauncherError(
-            "Vintage Programmer desktop now supports Chrome App Mode only. "
-            "Remove VP_DESKTOP_SHELL or set it to chrome."
+            "Validation Assistant desktop now supports Chrome App Mode only. "
+            "Remove VA_DESKTOP_SHELL or set it to chrome."
         )
 
 
@@ -299,7 +299,7 @@ def resolve_python_command(
         if resolved:
             return (str(Path(resolved).resolve()),)
     raise LauncherError(
-        "Python was not found. Create .venv in the Vintage Programmer repository before using the desktop launcher."
+        "Python was not found. Create .venv in the Validation Assistant repository before using the desktop launcher."
     )
 
 
@@ -352,7 +352,7 @@ def resolve_browser_path(
         if resolved_command:
             return Path(resolved_command).resolve()
     raise LauncherError(
-        "Google Chrome was not found. Install Chrome, or set VP_DESKTOP_BROWSER_PATH."
+        "Google Chrome was not found. Install Chrome, or set VA_DESKTOP_BROWSER_PATH."
     )
 
 
@@ -363,19 +363,19 @@ def build_launch_config(
     env: Mapping[str, str] | None = None,
 ) -> DesktopLaunchConfig:
     current_env = dict(os.environ if env is None else env)
-    root = resolve_project_root(project_root or current_env.get("VP_DESKTOP_PROJECT_ROOT"))
+    root = resolve_project_root(project_root or current_env.get("VA_DESKTOP_PROJECT_ROOT"))
     dotenv = read_dotenv(_dotenv_path(root, current_env))
 
-    raw_port = _setting("VP_APP_PORT", env=current_env, dotenv=dotenv, default=str(DEFAULT_APP_PORT))
+    raw_port = _setting("VA_APP_PORT", env=current_env, dotenv=dotenv, default=str(DEFAULT_APP_PORT))
     try:
         port = int(raw_port)
     except ValueError as exc:
-        raise LauncherError(f"VP_APP_PORT must be an integer, got: {raw_port}") from exc
+        raise LauncherError(f"VA_APP_PORT must be an integer, got: {raw_port}") from exc
     if port < 1 or port > 65535:
-        raise LauncherError(f"VP_APP_PORT must be between 1 and 65535, got: {port}")
+        raise LauncherError(f"VA_APP_PORT must be between 1 and 65535, got: {port}")
 
     raw_timeout = _setting(
-        "VP_DESKTOP_STARTUP_TIMEOUT_SEC",
+        "VA_DESKTOP_STARTUP_TIMEOUT_SEC",
         env=current_env,
         dotenv=dotenv,
         default=str(DEFAULT_STARTUP_TIMEOUT_SEC),
@@ -383,27 +383,27 @@ def build_launch_config(
     try:
         startup_timeout_sec = max(1.0, float(raw_timeout))
     except ValueError as exc:
-        raise LauncherError(f"VP_DESKTOP_STARTUP_TIMEOUT_SEC must be numeric, got: {raw_timeout}") from exc
+        raise LauncherError(f"VA_DESKTOP_STARTUP_TIMEOUT_SEC must be numeric, got: {raw_timeout}") from exc
 
     desktop_profile_raw = _setting(
-        "VP_DESKTOP_BROWSER_USER_DATA_DIR",
+        "VA_DESKTOP_BROWSER_USER_DATA_DIR",
         env=current_env,
         dotenv=dotenv,
         default="app/data/desktop_browser_profile",
     )
     desktop_profile = _resolve_relative_path(desktop_profile_raw, root)
-    agent_profile_raw = _setting("VP_BROWSER_USER_DATA_DIR", env=current_env, dotenv=dotenv)
+    agent_profile_raw = _setting("VA_BROWSER_USER_DATA_DIR", env=current_env, dotenv=dotenv)
     if agent_profile_raw:
         agent_profile = _resolve_relative_path(agent_profile_raw, root)
         if agent_profile == desktop_profile:
             raise LauncherError(
-                "The desktop Chrome profile must differ from VP_BROWSER_USER_DATA_DIR; "
+                "The desktop Chrome profile must differ from VA_BROWSER_USER_DATA_DIR; "
                 "the desktop window and Agent browser cannot share a live browser profile."
             )
 
     validate_chrome_shell_mode(
         _setting(
-            "VP_DESKTOP_SHELL",
+            "VA_DESKTOP_SHELL",
             env=current_env,
             dotenv=dotenv,
             default="auto",
@@ -411,11 +411,11 @@ def build_launch_config(
     )
 
     configured_browser = browser_path or _setting(
-        "VP_DESKTOP_BROWSER_PATH", env=current_env, dotenv=dotenv
+        "VA_DESKTOP_BROWSER_PATH", env=current_env, dotenv=dotenv
     )
     initial_window_width, initial_window_height = parse_window_size(
         _setting(
-            "VP_DESKTOP_INITIAL_WINDOW_SIZE",
+            "VA_DESKTOP_INITIAL_WINDOW_SIZE",
             env=current_env,
             dotenv=dotenv,
             default=f"{DEFAULT_INITIAL_WINDOW_SIZE[0]},{DEFAULT_INITIAL_WINDOW_SIZE[1]}",
@@ -423,7 +423,7 @@ def build_launch_config(
     )
     ui_scale = parse_ui_scale(
         _setting(
-            "VP_DESKTOP_UI_SCALE",
+            "VA_DESKTOP_UI_SCALE",
             env=current_env,
             dotenv=dotenv,
             default=str(DEFAULT_DESKTOP_UI_SCALE),
@@ -440,7 +440,7 @@ def build_launch_config(
         browser_path=resolved_browser,
         browser_profile_dir=desktop_profile,
         app_module=_setting(
-            "VP_APP_MODULE", env=current_env, dotenv=dotenv, default=DEFAULT_APP_MODULE
+            "VA_APP_MODULE", env=current_env, dotenv=dotenv, default=DEFAULT_APP_MODULE
         ),
         port=port,
         startup_timeout_sec=startup_timeout_sec,
@@ -472,7 +472,7 @@ def build_browser_command(
 ) -> list[str]:
     if config.browser_path is None:
         raise LauncherError(
-            "Google Chrome is unavailable. Install Chrome or set VP_DESKTOP_BROWSER_PATH."
+            "Google Chrome is unavailable. Install Chrome or set VA_DESKTOP_BROWSER_PATH."
         )
     command = [
         str(config.browser_path),
@@ -653,14 +653,14 @@ def windows_taskbar_relaunch_metadata(
             str(config.project_root),
         ]
     web_icon_path = (
-        config.project_root / "app" / "static" / "assets" / "vintage_programmer.ico"
+        config.project_root / "app" / "static" / "assets" / "validation_assistant.ico"
     ).resolve()
     build_icon_path = (
         config.project_root
         / "desktop"
         / "windows"
         / "assets"
-        / "vintage_programmer.ico"
+        / "validation_assistant.ico"
     ).resolve()
     icon_path = web_icon_path if web_icon_path.is_file() else build_icon_path
     if not icon_path.is_file() and is_frozen:
@@ -678,7 +678,7 @@ def set_windows_process_app_id(
     platform_name: str | None = None,
     setter: Callable[[str], int] | None = None,
 ) -> bool:
-    """Give the short launcher process the same explicit identity as the VP window."""
+    """Give the short launcher process the same explicit identity as the VA window."""
 
     if (platform_name or sys.platform) != "win32":
         return False
@@ -718,7 +718,7 @@ def _set_windows_taskbar_window_properties(
     *,
     diagnostics: dict[str, object] | None = None,
 ) -> bool:
-    """Set relaunch metadata and AppUserModelID on a Chrome-owned VP HWND."""
+    """Set relaunch metadata and AppUserModelID on a Chrome-owned VA HWND."""
 
     if sys.platform != "win32" or not int(window_handle or 0):
         _update_taskbar_diagnostics(diagnostics, "invalid_window")
@@ -866,14 +866,14 @@ def _enumerate_windows_top_level_windows(user32: object) -> list[tuple[int, str,
     return windows
 
 
-def find_windows_vp_window(
+def find_windows_va_window(
     title: str = APP_TITLE,
     *,
     platform_name: str | None = None,
     exact_finder: Callable[[str], int] | None = None,
     candidates_provider: Callable[[], Sequence[tuple[int, str, str]]] | None = None,
 ) -> int:
-    """Find the VP Chrome App window even when its unread badge changes the title."""
+    """Find the VA Chrome App window even when its unread badge changes the title."""
 
     if (platform_name or sys.platform) != "win32":
         return 0
@@ -924,7 +924,7 @@ def bind_windows_taskbar_identity(
         return False
     try:
         if window_finder is None:
-            window_finder = lambda title: find_windows_vp_window(
+            window_finder = lambda title: find_windows_va_window(
                 title,
                 platform_name="win32",
             )
@@ -1016,7 +1016,7 @@ def start_windows_taskbar_identity_binding(
 
     thread = threading.Thread(
         target=worker,
-        name="vp-taskbar-identity",
+        name="va-taskbar-identity",
         daemon=True,
     )
     thread.start()
@@ -1153,24 +1153,24 @@ def write_chrome_preparation_page(
     normalized_state = str(state or "preparing").strip().lower()
     if normalized_state == "ready":
         state_script = (
-            "window.__VP_PREPARING_TERMINAL__=true;"
+            "window.__VA_PREPARING_TERMINAL__=true;"
             f"window.location.replace({json.dumps(config.chrome_desktop_url)});"
         )
         _write_preparing_document(config.desktop_preparing_state_path, state_script)
         return config.desktop_preparing_path
     if normalized_state == "failed":
         failure = str(error or f"See {config.log_path}").strip()
-        state_script = f"window.vpPreparingFailed({json.dumps(failure)});"
+        state_script = f"window.vaPreparingFailed({json.dumps(failure)});"
         _write_preparing_document(config.desktop_preparing_state_path, state_script)
         return config.desktop_preparing_path
 
-    icon_path = config.project_root / "app" / "static" / "assets" / "vintage_programmer.png"
+    icon_path = config.project_root / "app" / "static" / "assets" / "validation_assistant.png"
     icon_markup = (
         f'<img class="mark" src="{escape(icon_path.resolve().as_uri())}" alt="">'
         if icon_path.is_file()
-        else '<div class="mark fallback">VP</div>'
+        else '<div class="mark fallback">VA</div>'
     )
-    favicon_path = config.project_root / "app" / "static" / "assets" / "vintage_programmer.ico"
+    favicon_path = config.project_root / "app" / "static" / "assets" / "validation_assistant.ico"
     favicon_source = favicon_path if favicon_path.is_file() else icon_path
     favicon_markup = (
         f'<link rel="icon" href="{escape(favicon_source.resolve().as_uri())}" sizes="any">'
@@ -1212,9 +1212,9 @@ def write_chrome_preparation_page(
     {spinner}
   </main>
   <script>
-    window.__VP_PREPARING_TERMINAL__ = false;
-    window.vpPreparingFailed = (message) => {{
-      window.__VP_PREPARING_TERMINAL__ = true;
+    window.__VA_PREPARING_TERMINAL__ = false;
+    window.vaPreparingFailed = (message) => {{
+      window.__VA_PREPARING_TERMINAL__ = true;
       document.getElementById("preparingHeading").textContent = "Startup failed";
       const detail = document.getElementById("preparingDetail");
       detail.textContent = String(message || "");
@@ -1223,12 +1223,12 @@ def write_chrome_preparation_page(
       if (spinner) spinner.remove();
     }};
     const pollState = () => {{
-      if (window.__VP_PREPARING_TERMINAL__) return;
+      if (window.__VA_PREPARING_TERMINAL__) return;
       const script = document.createElement("script");
       script.src = {json.dumps(config.desktop_preparing_state_path.name)} + "?check=" + Date.now();
       script.onload = script.onerror = () => {{
         script.remove();
-        if (!window.__VP_PREPARING_TERMINAL__) window.setTimeout(pollState, 250);
+        if (!window.__VA_PREPARING_TERMINAL__) window.setTimeout(pollState, 250);
       }};
       document.head.appendChild(script);
     }};
@@ -1239,7 +1239,7 @@ def write_chrome_preparation_page(
 """
     _write_preparing_document(
         config.desktop_preparing_state_path,
-        "window.__VP_PREPARING_STATE__='preparing';",
+        "window.__VA_PREPARING_STATE__='preparing';",
     )
     _write_preparing_document(config.desktop_preparing_path, document)
     return config.desktop_preparing_path
@@ -1265,7 +1265,7 @@ def focus_existing_desktop_window(
         return False
     api = user32 or ctypes.windll.user32
     if user32 is None:
-        window_handle = find_windows_vp_window(APP_TITLE, platform_name="win32")
+        window_handle = find_windows_va_window(APP_TITLE, platform_name="win32")
     else:
         window_handle = int(api.FindWindowW(None, APP_TITLE) or 0)
     if not window_handle:
@@ -1338,7 +1338,7 @@ def startup_lock(path: Path, *, timeout_sec: float = 15.0) -> Iterator[None]:
             except (BlockingIOError, OSError):
                 time.sleep(0.1)
         if not locked:
-            raise LauncherError("Another Vintage Programmer desktop launch is still starting.")
+            raise LauncherError("Another Validation Assistant desktop launch is still starting.")
         yield
     finally:
         if locked:
@@ -1409,7 +1409,7 @@ def run_desktop(config: DesktopLaunchConfig) -> None:
                         health_wait_ms=_elapsed_ms(health_wait_started_at),
                         **health_diagnostics,
                     )
-                    failure = f"Vintage Programmer did not start. See the launcher log: {config.log_path}"
+                    failure = f"Validation Assistant did not start. See the launcher log: {config.log_path}"
                     if chrome_window_started:
                         write_chrome_preparation_page(config, state="failed", error=failure)
                     raise LauncherError(failure)
@@ -1493,7 +1493,7 @@ def restart_server_only(config: DesktopLaunchConfig) -> None:
             "restart_shutdown_timeout",
             elapsed_ms=_elapsed_ms(restart_started_at),
         )
-        raise LauncherError("Vintage Programmer did not stop in time for restart.")
+        raise LauncherError("Validation Assistant did not stop in time for restart.")
 
     lock_path = config.project_root / "app" / "data" / "runtime" / "desktop-launcher.lock"
     process: subprocess.Popen[bytes] | None = None
@@ -1527,7 +1527,7 @@ def restart_server_only(config: DesktopLaunchConfig) -> None:
                     **health_diagnostics,
                 )
                 raise LauncherError(
-                    f"Vintage Programmer did not restart. See the launcher log: {config.log_path}"
+                    f"Validation Assistant did not restart. See the launcher log: {config.log_path}"
                 )
             write_launcher_log_event(
                 config,
@@ -1573,9 +1573,9 @@ def _write_diagnostics(payload: dict[str, object], output_path: str) -> None:
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Open Vintage Programmer in Google Chrome App Mode."
+        description="Open Validation Assistant in Google Chrome App Mode."
     )
-    parser.add_argument("--project-root", default="", help="Vintage Programmer repository root")
+    parser.add_argument("--project-root", default="", help="Validation Assistant repository root")
     parser.add_argument("--browser-path", default="", help="Google Chrome executable path")
     parser.add_argument("--dry-run", action="store_true", help="Validate and print configuration without launching")
     parser.add_argument("--diagnostics-file", default="", help="Write dry-run diagnostics to a JSON file")

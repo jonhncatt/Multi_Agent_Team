@@ -463,7 +463,7 @@ def test_save_task_approval_cannot_authorize_changed_content(tmp_path: Path) -> 
 def test_exec_command_runs_enabled_skill_python_directly_from_business_project(tmp_path: Path) -> None:
     project_root = tmp_path / "business-project"
     project_root.mkdir()
-    skill_root = tmp_path / "vp-install" / "skills" / "team" / "scripted"
+    skill_root = tmp_path / "va-install" / "skills" / "team" / "scripted"
     script = skill_root / "scripts" / "check.py"
     script.parent.mkdir(parents=True)
     script.write_text(
@@ -1622,7 +1622,7 @@ def test_apply_patch_add_existing_file_returns_actionable_structured_failure(tmp
 
 def test_apply_patch_requires_runtime_write_scope_for_team_and_rejects_project_skill_paths(tmp_path: Path) -> None:
     executor = LocalToolExecutor(_config(tmp_path))
-    team_root = tmp_path / "vp-install" / "skills" / "team"
+    team_root = tmp_path / "va-install" / "skills" / "team"
     executor.set_runtime_context(
         project_root=str(tmp_path),
         cwd=str(tmp_path),
@@ -1638,7 +1638,7 @@ def test_apply_patch_requires_runtime_write_scope_for_team_and_rejects_project_s
     )
 
     team_result = executor.apply_patch(
-        "*** Begin Patch\n*** Add File: vp-install/skills/team/demo/SKILL.md\n+# Team\n*** End Patch\n",
+        "*** Begin Patch\n*** Add File: va-install/skills/team/demo/SKILL.md\n+# Team\n*** End Patch\n",
         cwd=str(tmp_path),
     )
     project_result = executor.apply_patch(
@@ -1658,7 +1658,7 @@ def test_apply_patch_requires_runtime_write_scope_for_team_and_rejects_project_s
 def test_apply_patch_updates_existing_team_skill_script_when_runtime_boundary_allows(tmp_path: Path) -> None:
     project_root = tmp_path / "business-project"
     project_root.mkdir()
-    team_root = tmp_path / "vp-install" / "skills" / "team"
+    team_root = tmp_path / "va-install" / "skills" / "team"
     skill_root = team_root / "scripted"
     script = skill_root / "scripts" / "collect_env.py"
     script.parent.mkdir(parents=True)
@@ -1675,7 +1675,7 @@ def test_apply_patch_updates_existing_team_skill_script_when_runtime_boundary_al
             "team_skill_write_allowed": True,
         },
         reserved_skill_roots=[str(team_root)],
-        builtin_skill_roots=[str(tmp_path / "vp-install" / "skills" / "builtin")],
+        builtin_skill_roots=[str(tmp_path / "va-install" / "skills" / "builtin")],
         team_skill_roots=[str(team_root)],
     )
     patch = (
@@ -1684,7 +1684,7 @@ def test_apply_patch_updates_existing_team_skill_script_when_runtime_boundary_al
         "@@\n"
         "-print('old')\n"
         "+import os\n"
-        "+print(os.environ.get('VP_MODE', ''))\n"
+        "+print(os.environ.get('VA_MODE', ''))\n"
         "*** End Patch\n"
     )
 

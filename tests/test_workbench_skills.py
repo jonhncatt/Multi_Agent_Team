@@ -8,7 +8,7 @@ from app.workbench import WorkbenchStore
 
 
 def _store(repository_root: Path, *, configured_workspace_root: Path | None = None) -> WorkbenchStore:
-    agent_dir = repository_root / "agents" / "vintage_programmer"
+    agent_dir = repository_root / "agents" / "validation_assistant"
     agent_dir.mkdir(parents=True, exist_ok=True)
     config_root = configured_workspace_root or repository_root
     config_root.mkdir(parents=True, exist_ok=True)
@@ -102,8 +102,8 @@ def test_workbench_unscoped_duplicate_requires_explicit_key(tmp_path: Path) -> N
     assert store.load_skill("builtin:same_name")["key"] == "builtin:same_name"
 
 
-def test_workbench_save_skill_uses_vp_repository_not_configured_business_project(tmp_path: Path) -> None:
-    repository_root = tmp_path / "vintage-programmer"
+def test_workbench_save_skill_uses_va_repository_not_configured_business_project(tmp_path: Path) -> None:
+    repository_root = tmp_path / "validation-assistant"
     business_project = tmp_path / "business-code"
     store = _store(repository_root, configured_workspace_root=business_project)
 
@@ -122,7 +122,7 @@ def test_workbench_save_skill_uses_vp_repository_not_configured_business_project
 
 
 def test_workbench_catalog_is_stable_across_business_project_switches(tmp_path: Path) -> None:
-    repository_root = tmp_path / "vintage-programmer"
+    repository_root = tmp_path / "validation-assistant"
     first = _store(repository_root, configured_workspace_root=tmp_path / "project-a")
     _write_skill(first.team_skills_dir / "shared" / "SKILL.md", name="shared", description="global team skill")
 
@@ -163,7 +163,7 @@ def test_workbench_save_skill_requires_overwrite_and_rejects_builtin_name(tmp_pa
 
 def test_workbench_migrates_legacy_workspace_and_user_system_skills_idempotently(tmp_path: Path) -> None:
     legacy_workspace = tmp_path / "workspace" / "skills" / "old_workspace"
-    legacy_system = tmp_path / "agents" / "vintage_programmer" / "skills" / "old_company"
+    legacy_system = tmp_path / "agents" / "validation_assistant" / "skills" / "old_company"
     _write_skill(legacy_workspace / "SKILL.md", name="old_workspace", description="legacy workspace")
     (legacy_workspace / "references").mkdir()
     (legacy_workspace / "references" / "notes.md").write_text("legacy reference\n", encoding="utf-8")
@@ -261,11 +261,11 @@ def test_workbench_exposes_enabled_skill_path_without_a_script_resolver(tmp_path
     script.write_text("print('ok')\n", encoding="utf-8")
     (script.parent / "notes.txt").write_text("not executable\n", encoding="utf-8")
 
-    enabled = store.enabled_skills_for_agent("vintage_programmer")
+    enabled = store.enabled_skills_for_agent("validation_assistant")
 
     assert [item["key"] for item in enabled] == ["team:scripted"]
     assert Path(enabled[0]["path"]) == skill_file.resolve()
     assert not hasattr(store, "resolve_skill_script")
 
     store.set_skill_enabled("scripted", False, scope="team")
-    assert store.enabled_skills_for_agent("vintage_programmer") == []
+    assert store.enabled_skills_for_agent("validation_assistant") == []

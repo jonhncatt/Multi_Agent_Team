@@ -13,7 +13,7 @@ from app.local_tools import (
     APPLY_PATCH_TOOL_DESCRIPTION,
     LocalToolExecutor,
 )
-from app.vp_runtime_backend import VPRuntimeBackend
+from app.va_runtime_backend import VARuntimeBackend
 
 
 def _config(tmp_path: Path):
@@ -31,7 +31,7 @@ def _config(tmp_path: Path):
 
 def _tool_surfaces(tmp_path: Path):
     executor = LocalToolExecutor(_config(tmp_path))
-    backend = VPRuntimeBackend(executor.config, tool_executor=executor)
+    backend = VARuntimeBackend(executor.config, tool_executor=executor)
     model_specs = {
         item["function"]["name"]: item["function"]
         for item in (

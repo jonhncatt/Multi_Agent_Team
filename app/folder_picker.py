@@ -14,7 +14,7 @@ using System;
 using System.Runtime.InteropServices;
 using System.Text;
 
-namespace VPFolderPicker
+namespace VAFolderPicker
 {
     [Flags]
     internal enum FileOpenOptions : uint
@@ -53,9 +53,9 @@ namespace VPFolderPicker
         [DllImport("user32.dll", CharSet = CharSet.Unicode)]
         private static extern int GetWindowText(IntPtr window, StringBuilder title, int maxCount);
 
-        public static IntPtr FindVintageProgrammer()
+        public static IntPtr FindValidationAssistant()
         {
-            IntPtr exact = FindWindow(null, "Vintage Programmer");
+            IntPtr exact = FindWindow(null, "Validation Assistant");
             if (exact != IntPtr.Zero)
             {
                 return exact;
@@ -67,7 +67,7 @@ namespace VPFolderPicker
                 if (!IsWindowVisible(window)) return true;
                 StringBuilder title = new StringBuilder(512);
                 GetWindowText(window, title, title.Capacity);
-                if (title.ToString().Contains("Vintage Programmer"))
+                if (title.ToString().Contains("Validation Assistant"))
                 {
                     match = window;
                     return false;
@@ -205,9 +205,9 @@ namespace VPFolderPicker
 $exitCode = 2
 try {
     Add-Type -TypeDefinition $source -Language CSharp
-    $ownerHandle = [VPFolderPicker.NativeWindow]::FindVintageProgrammer()
-    $selected = [VPFolderPicker.CommonFolderDialog]::Show(
-        $env:VP_FOLDER_PICKER_INITIAL,
+    $ownerHandle = [VAFolderPicker.NativeWindow]::FindValidationAssistant()
+    $selected = [VAFolderPicker.CommonFolderDialog]::Show(
+        $env:VA_FOLDER_PICKER_INITIAL,
         $ownerHandle
     )
     if (-not [String]::IsNullOrWhiteSpace($selected)) {
@@ -285,7 +285,7 @@ def choose_system_folder(initial_path: str = "", *, platform_name: str = "") -> 
     system = str(platform_name or platform.system() or "").strip().lower()
     initial = _initial_directory(initial_path)
     env = os.environ.copy()
-    env["VP_FOLDER_PICKER_INITIAL"] = str(initial)
+    env["VA_FOLDER_PICKER_INITIAL"] = str(initial)
 
     if system.startswith("win"):
         powershell = shutil.which("powershell") or shutil.which("pwsh")

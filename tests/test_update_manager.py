@@ -56,7 +56,7 @@ class FakeGitRunner:
         if args == ["git", "config", "--get", f"branch.{self.branch}.merge"]:
             return UpdateCommandResult(command=command, exit_code=0, stdout=f"refs/heads/{self.remote_branch}\n")
         if args == ["git", "remote", "get-url", self.remote]:
-            return UpdateCommandResult(command=command, exit_code=0, stdout=f"ssh://git.example.test/team/vp.git\n")
+            return UpdateCommandResult(command=command, exit_code=0, stdout=f"ssh://git.example.test/team/va.git\n")
         if args[:2] == ["git", "describe"]:
             return UpdateCommandResult(command=command, exit_code=0, stdout="v2.9.19-test\n")
         if args[:3] == ["git", "status", "--porcelain"]:
@@ -88,7 +88,7 @@ def test_update_manager_status_detects_repo_branch_and_version(tmp_path: Path) -
     assert payload["commit"] == "abc1234"
     assert payload["version"] == "v2.9.19-test"
     assert payload["upstream"] == "origin/main"
-    assert payload["remote_url"] == "ssh://git.example.test/team/vp.git"
+    assert payload["remote_url"] == "ssh://git.example.test/team/va.git"
 
 
 def test_update_manager_updates_active_branch_from_configured_upstream_without_tags(tmp_path: Path) -> None:

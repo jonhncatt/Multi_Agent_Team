@@ -1,0 +1,374 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+import app.config as config_mod
+from app.config import list_provider_profiles, load_config, resolve_python_command
+from app.models import ChatSettings
+from app.openai_auth import OpenAIAuthManager
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_dotenv_uses_va_application_root_not_process_cwd(monkeypatch, tmp_path) -> None:
+    app_root = tmp_path / "validation-assistant"
+    project_root = tmp_path / "business-project"
+    (app_root / "app").mkdir(parents=True)
+    project_root.mkdir()
+    (app_root / ".env").write_text("TEAM_SKILL_TEST_KEY=from-va\n", encoding="utf-8")
+    (project_root / ".env").write_text("TEAM_SKILL_TEST_KEY=from-project\n", encoding="utf-8")
+    monkeypatch.chdir(project_root)
+    monkeypatch.setattr(config_mod, "__file__", str(app_root / "app" / "config.py"))
+    monkeypatch.delenv("VA_DOTENV_PATH", raising=False)
+    monkeypatch.delenv("VA_SKIP_DOTENV", raising=False)
+    monkeypatch.delenv("TEAM_SKILL_TEST_KEY", raising=False)
+
+    config_mod._load_dotenv_if_present()
+
+    assert config_mod.os.environ["TEAM_SKILL_TEST_KEY"] == "from-va"
+
+
+def test_dotenv_supports_explicit_va_path_and_preserves_process_secret(monkeypatch, tmp_path) -> None:
+    dotenv_path = tmp_path / "va-secrets.env"
+    dotenv_path.write_text(
+        "TEAM_SKILL_FILE_ONLY=file-value\nTEAM_SKILL_PROCESS_WINS=file-value\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("VA_DOTENV_PATH", str(dotenv_path))
+    monkeypatch.delenv("VA_SKIP_DOTENV", raising=False)
+    monkeypatch.delenv("TEAM_SKILL_FILE_ONLY", raising=False)
+    monkeypatch.setenv("TEAM_SKILL_PROCESS_WINS", "process-value")
+
+    config_mod._load_dotenv_if_present()
+
+    assert config_mod.os.environ["TEAM_SKILL_FILE_ONLY"] == "file-value"
+    assert config_mod.os.environ["TEAM_SKILL_PROCESS_WINS"] == "process-value"
+
+
+def test_va_openai_compatible_env_is_first_class(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("VA_SKIP_DOTENV", "1")
+    monkeypatch.setenv("VA_WORKSPACE_ROOT", str(tmp_path))
+    monkeypatch.setenv("VA_LLM_PROVIDER", "openai_compatible")
+    monkeypatch.setenv("VA_OPENAI_COMPAT_API_KEY", "test-key")
+    monkeypatch.setenv("VA_OPENAI_COMPAT_BASE_URL", "https://gateway.example.com/v1")
+
+    config = load_config()
+    resolved = OpenAIAuthManager(config).resolve()
+
+    assert config.llm_provider == "openai_compatible"
+    assert config.llm_primary_api_key_env == "VA_OPENAI_COMPAT_API_KEY"
+    assert config.openai_base_url == "https://gateway.example.com/v1"
+    assert config.default_model in config.model_options
+    assert config.default_model == "gpt-5.6-luna"
+    assert config.summary_model == "gpt-5.6-luna"
+    assert "gpt-5.4-mini" in config.model_options
+    assert "gpt-5.4-nano" in config.model_options
+    assert resolved.mode == "api_key"
+
+
+def test_va_openrouter_env_uses_dedicated_keys(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("VA_SKIP_DOTENV", "1")
+    monkeypatch.setenv("VA_WORKSPACE_ROOT", str(tmp_path))
+    monkeypatch.setenv("VA_LLM_PROVIDER", "openrouter")
+    monkeypatch.setenv("VA_OPENROUTER_API_KEY", "router-key")
+    monkeypatch.setenv("VA_OPENROUTER_DEFAULT_MODEL", "google/gemma-4-31b-it:free")
+    monkeypatch.setenv("VA_OPENROUTER_MODEL_FALLBACKS", "nvidia/nemotron-3-super-120b-a12b:free")
+
+    config = load_config()
+
+    assert config.llm_provider == "openrouter"
+    assert config.llm_primary_api_key_env == "VA_OPENROUTER_API_KEY"
+    assert config.openai_base_url == "https://openrouter.ai/api/v1"
+    assert config.llm_api_key_env_keys[0] == "VA_OPENROUTER_API_KEY"
+    assert config.default_model == "google/gemma-4-31b-it:free"
+    assert "google/gemma-4-31b-it:free" in config.model_options
+    assert "nvidia/nemotron-3-super-120b-a12b:free" in config.model_options
+
+
+def test_openai_requires_explicit_api_key_configuration(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("VA_SKIP_DOTENV", "1")
+    monkeypatch.setenv("VA_WORKSPACE_ROOT", str(tmp_path))
+    monkeypatch.setenv("VA_LLM_PROVIDER", "openai")
+
+    config = load_config()
+    resolved = OpenAIAuthManager(config).resolve()
+
+    assert resolved.mode == "unconfigured"
+    assert resolved.available is False
+
+
+def test_provider_profiles_only_list_env_configured_providers(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("VA_SKIP_DOTENV", "1")
+    monkeypatch.setenv("VA_WORKSPACE_ROOT", str(tmp_path))
+    monkeypatch.setenv("VA_LLM_PROVIDER", "openrouter")
+    monkeypatch.setenv("VA_OPENROUTER_API_KEY", "router-key")
+    monkeypatch.setenv("VA_DEEPSEEK_API_KEY", "deepseek-key")
+    for key in (
+        "VA_OPENAI_COMPAT_API_KEY",
+        "VA_OPENAI_COMPAT_BASE_URL",
+        "VA_OPENAI_COMPAT_CA_CERT_PATH",
+        "VA_OPENAI_COMPAT_TEMPERATURE",
+        "VA_OPENAI_COMPAT_USE_RESPONSES_API",
+        "VA_OPENAI_COMPAT_DEFAULT_MODEL",
+        "VA_OPENAI_COMPAT_MODEL_FALLBACKS",
+        "VA_PROVIDER_OPENAI_COMPATIBLE_API_KEY",
+        "VA_PROVIDER_OPENAI_COMPATIBLE_BASE_URL",
+        "VA_PROVIDER_OPENAI_COMPATIBLE_CA_CERT_PATH",
+        "VA_PROVIDER_OPENAI_COMPATIBLE_TEMPERATURE",
+        "VA_PROVIDER_OPENAI_COMPATIBLE_USE_RESPONSES_API",
+        "VA_PROVIDER_OPENAI_COMPATIBLE_DEFAULT_MODEL",
+        "VA_PROVIDER_OPENAI_COMPATIBLE_MODEL_FALLBACKS",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    config = load_config()
+    profiles = list_provider_profiles(config)
+    providers = [item["provider"] for item in profiles]
+
+    assert "openrouter" in providers
+    assert "deepseek" in providers
+    assert "openai_compatible" not in providers
+    openrouter = next(item for item in profiles if item["provider"] == "openrouter")
+    assert openrouter["default_model"]
+    assert "google/gemma-4-31b-it:free" in openrouter["model_options"]
+
+
+@pytest.mark.parametrize("locale", ["en", "zh-CN"])
+def test_va_default_locale_can_be_configured(monkeypatch, tmp_path, locale: str) -> None:
+    monkeypatch.setenv("VA_SKIP_DOTENV", "1")
+    monkeypatch.setenv("VA_WORKSPACE_ROOT", str(tmp_path))
+    monkeypatch.setenv("VA_DEFAULT_LOCALE", locale)
+
+    config = load_config()
+
+    assert config.default_locale == locale
+
+
+def test_va_max_output_tokens_defaults_to_large_context_default(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("VA_SKIP_DOTENV", "1")
+    monkeypatch.setenv("VA_WORKSPACE_ROOT", str(tmp_path))
+
+    config = load_config()
+
+    assert config.max_output_tokens == 16384
+
+
+def test_va_max_concurrent_runs_defaults_to_five(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("VA_SKIP_DOTENV", "1")
+    monkeypatch.setenv("VA_WORKSPACE_ROOT", str(tmp_path))
+    monkeypatch.delenv("VA_MAX_CONCURRENT_RUNS", raising=False)
+
+    config = load_config()
+
+    assert config.max_concurrent_runs == 5
+
+
+def test_va_max_concurrent_runs_env_overrides_default(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("VA_SKIP_DOTENV", "1")
+    monkeypatch.setenv("VA_WORKSPACE_ROOT", str(tmp_path))
+    monkeypatch.setenv("VA_MAX_CONCURRENT_RUNS", "7")
+
+    config = load_config()
+
+    assert config.max_concurrent_runs == 7
+
+
+def test_va_max_output_tokens_env_is_loaded(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("VA_SKIP_DOTENV", "1")
+    monkeypatch.setenv("VA_WORKSPACE_ROOT", str(tmp_path))
+    monkeypatch.setenv("VA_MAX_OUTPUT_TOKENS", "2048")
+
+    config = load_config()
+
+    assert config.max_output_tokens == 2048
+
+
+def test_va_max_user_request_chars_env_is_loaded(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("VA_SKIP_DOTENV", "1")
+    monkeypatch.setenv("VA_WORKSPACE_ROOT", str(tmp_path))
+    monkeypatch.setenv("VA_MAX_USER_REQUEST_CHARS", "123456")
+
+    config = load_config()
+
+    assert config.max_user_request_chars == 123456
+
+
+def test_va_context_compaction_env_is_loaded(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("VA_SKIP_DOTENV", "1")
+    monkeypatch.setenv("VA_WORKSPACE_ROOT", str(tmp_path))
+    monkeypatch.setenv("VA_CONTEXT_AUTO_COMPACT_RATIO", "0.81")
+    monkeypatch.setenv("VA_CONTEXT_DANGER_COMPACT_RATIO", "0.96")
+    monkeypatch.setenv("VA_CONTEXT_HISTORY_SOFT_LIMIT_TOKENS", "234567")
+    monkeypatch.setenv("VA_CONTEXT_EXACT_STALE_SEC", "90")
+    monkeypatch.setenv("VA_MODEL_MAX_CONTEXT_WINDOW_TOKENS", "1050000")
+    monkeypatch.setenv("VA_TOOL_OUTPUT_TOKEN_LIMIT", "9000")
+
+    config = load_config()
+
+    assert config.context_auto_compact_ratio == 0.81
+    assert config.context_danger_compact_ratio == 0.96
+    assert config.context_history_soft_limit_tokens == 234567
+    assert config.context_exact_stale_sec == 90
+    assert config.model_max_context_window_tokens == 1_050_000
+    assert config.tool_output_token_limit == 9000
+
+
+def test_web_fetch_budget_matches_main_branch_defaults(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("VA_SKIP_DOTENV", "1")
+    monkeypatch.setenv("VA_WORKSPACE_ROOT", str(tmp_path))
+
+    config = load_config()
+
+    assert config.web_fetch_max_chars == 120000
+
+
+def test_web_fetch_budget_allows_large_configured_fetches(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("VA_SKIP_DOTENV", "1")
+    monkeypatch.setenv("VA_WORKSPACE_ROOT", str(tmp_path))
+    monkeypatch.setenv("VA_WEB_FETCH_MAX_CHARS", "800000")
+
+    config = load_config()
+
+    assert config.web_fetch_max_chars == 500000
+
+
+def test_browser_chrome_profile_env_is_loaded(monkeypatch, tmp_path) -> None:
+    profile_dir = tmp_path / "app" / "data" / "browser_profile"
+    monkeypatch.setenv("VA_SKIP_DOTENV", "1")
+    monkeypatch.setenv("VA_WORKSPACE_ROOT", str(tmp_path))
+    monkeypatch.setenv("VA_BROWSER_MODE", "chrome_profile")
+    monkeypatch.setenv("VA_BROWSER_CHANNEL", "chrome")
+    monkeypatch.setenv("VA_BROWSER_HEADLESS", "false")
+    monkeypatch.setenv("VA_BROWSER_USER_DATA_DIR", "app/data/browser_profile")
+    monkeypatch.setenv("VA_BROWSER_PROXY_SERVER", "http://proxy.example:8080")
+    monkeypatch.setenv("VA_BROWSER_IGNORE_HTTPS_ERRORS", "true")
+    monkeypatch.setenv("VA_BROWSER_DISABLE_PASSWORD_MANAGER", "true")
+
+    config = load_config()
+
+    assert config.browser_mode == "chrome_profile"
+    assert config.browser_channel == "chrome"
+    assert config.browser_headless is False
+    assert config.browser_user_data_dir == profile_dir.resolve()
+    assert config.browser_proxy_server == "http://proxy.example:8080"
+    assert config.browser_ignore_https_errors is True
+    assert config.browser_chromium_sandbox is True
+    assert config.browser_disable_password_manager is True
+
+
+def test_env_example_matches_web_fetch_budget_default() -> None:
+    env_example = (REPO_ROOT / ".env.example").read_text(encoding="utf-8")
+    lines = {line.strip() for line in env_example.splitlines()}
+
+    assert "# VA_MAX_OUTPUT_TOKENS=16384" in lines
+    assert "# VA_MAX_USER_REQUEST_CHARS=4000000" in lines
+    assert "# VA_MAX_ATTACHMENT_CHARS=1000000" in lines
+    assert "# VA_CONTEXT_AUTO_COMPACT_RATIO=0.9" in lines
+    assert "# VA_CONTEXT_DANGER_COMPACT_RATIO=0.95" in lines
+    assert "# VA_CONTEXT_HISTORY_SOFT_LIMIT_TOKENS=120000" in lines
+    assert "# VA_CONTEXT_EXACT_STALE_SEC=60" in lines
+    assert "# VA_WEB_FETCH_MAX_CHARS=120000" in lines
+    assert "# VA_WEB_FETCH_MAX_CHARS=12000" not in lines
+
+
+def test_va_allowed_commands_env_is_full_override(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("VA_SKIP_DOTENV", "1")
+    monkeypatch.setenv("VA_WORKSPACE_ROOT", str(tmp_path))
+    monkeypatch.setenv("VA_ALLOWED_COMMANDS", "printf,dir")
+
+    config = load_config()
+
+    assert config.allowed_commands == ["printf", "dir"]
+
+
+def test_permission_safe_defaults_do_not_add_user_folders(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("VA_SKIP_DOTENV", "1")
+    monkeypatch.setenv("VA_WORKSPACE_ROOT", str(tmp_path))
+    monkeypatch.delenv("VA_PERMISSION_PROFILE", raising=False)
+
+    config = load_config()
+
+    assert config.permission_profile == "auto"
+    assert config.default_extra_allowed_roots == []
+    assert config.allow_workspace_sibling_access is False
+    assert config.workspace_sibling_root is None
+    assert config.allowed_roots == [tmp_path.resolve()]
+
+
+def test_permission_profile_aliases(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("VA_SKIP_DOTENV", "1")
+    monkeypatch.setenv("VA_WORKSPACE_ROOT", str(tmp_path))
+    monkeypatch.setenv("VA_PERMISSION_PROFILE", "full")
+
+    config = load_config()
+
+    assert config.permission_profile == "full_access"
+
+
+def test_permission_profile_alias_normalization(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("VA_SKIP_DOTENV", "1")
+    monkeypatch.setenv("VA_WORKSPACE_ROOT", str(tmp_path))
+
+    cases = {
+        "chat": "default",
+        "readonly": "default",
+        "read_only": "default",
+        "read only": "default",
+        "default": "default",
+        "safe": "default",
+        "safe_default": "default",
+        "code": "auto",
+        "coding": "auto",
+        "auto": "auto",
+        "automatic": "auto",
+        "full_dev": "full_access",
+        "full dev": "full_access",
+        "fulldev": "full_access",
+        "full": "full_access",
+        "dev": "full_access",
+        "full_access": "full_access",
+        "full-access": "full_access",
+        "danger_full_access": "full_access",
+        "danger-full-access": "full_access",
+        "unknown": "auto",
+    }
+
+    for raw, expected in cases.items():
+        monkeypatch.setenv("VA_PERMISSION_PROFILE", raw)
+        assert load_config().permission_profile == expected
+
+
+def test_chat_settings_max_context_turns_default_remains_2000() -> None:
+    assert ChatSettings().max_context_turns == 2000
+
+
+def test_chat_settings_accept_supported_reasoning_efforts() -> None:
+    assert ChatSettings().reasoning_effort is None
+    assert ChatSettings(reasoning_effort="none").reasoning_effort == "none"
+    assert ChatSettings(reasoning_effort="max").reasoning_effort == "max"
+
+
+def test_resolve_python_command_prefers_python_on_windows() -> None:
+    which = lambda name: f"/fake/{name}" if name in {"python", "py", "python3"} else None
+
+    assert resolve_python_command("Windows", which=which) == "python"
+
+
+def test_resolve_python_command_prefers_python_then_python3_on_non_windows() -> None:
+    which = lambda name: f"/fake/{name}" if name in {"python", "python3"} else None
+
+    assert resolve_python_command("Linux", which=which) == "python"
+
+
+def test_resolve_python_command_uses_python3_when_python_missing() -> None:
+    which = lambda name: f"/fake/{name}" if name == "python3" else None
+
+    assert resolve_python_command("Linux", which=which) == "python3"
+
+
+def test_resolve_python_command_falls_back_to_py_when_needed() -> None:
+    which = lambda name: f"/fake/{name}" if name == "py" else None
+
+    assert resolve_python_command("Windows", which=which) == "py"

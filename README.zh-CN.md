@@ -1,6 +1,6 @@
-# Vintage Programmer
+# Validation Assistant
 
-![Version](https://img.shields.io/badge/version-3.1.7-blue)
+![Version](https://img.shields.io/badge/version-1.0.0-blue)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Backend](https://img.shields.io/badge/backend-FastAPI-green)
 ![Browser](https://img.shields.io/badge/browser-Playwright-green)
@@ -9,38 +9,38 @@
 
 一个本地优先的 AI Agent 工作台，重点是可观察的 activity tracing（执行过程追踪）、可编辑 agent specs（Agent 规范）和 harness-validated execution（由 harness 验证的执行链路）。
 
-**Vintage Programmer** 不是普通聊天 UI。  
+**Validation Assistant** 不是普通聊天 UI。
 它希望让用户看到 Agent 在一个 turn（用户一轮请求）里到底经历了什么：
 **用户请求 -> 模型行动 -> harness 验证 -> 工具执行 -> 观察结果 -> 最终回答**
 
 [中文首页](README.md) · [English README](README.en.md) · [日本語 README](README.ja.md) · [Windows 指南](README.windows.md) · [文档索引](docs/README.md) · [发布流程](RELEASING.md)
 
-当前稳定版本：`3.1.7`
+当前稳定版本：`1.0.0`
 
 ## Stable Runtime
 
-当前分支使用独立的全局 Skill Registry：支持只读 Built-in Skills 和通过 Vintage Programmer Git 仓库共享的 Team Skills。runtime 注入轻量 `[available_skills]` 和每个启用 Skill 的 `SKILL.md` 路径；模型用普通 `read_file` 读取完整说明，用普通 `exec_command` 执行附属脚本。
+当前分支使用独立的全局 Skill Registry：支持只读 Built-in Skills 和通过 Validation Assistant Git 仓库共享的 Team Skills。runtime 注入轻量 `[available_skills]` 和每个启用 Skill 的 `SKILL.md` 路径；模型用普通 `read_file` 读取完整说明，用普通 `exec_command` 执行附属脚本。
 
-`save_skill` 只把可复用流程写入 VP 仓库的 `skills/team/<name>/SKILL.md`，与当前业务项目无关；内置 `create-team-skill` 用于指导 Team Skill 创作，Built-in Skills 保持只读。
+`save_skill` 只把可复用流程写入 VA 仓库的 `skills/team/<name>/SKILL.md`，与当前业务项目无关；内置 `create-team-skill` 用于指导 Team Skill 创作，Built-in Skills 保持只读。
 
 ## Max Output Tokens
 
 推荐默认设置：
 
 ```env
-VP_MAX_OUTPUT_TOKENS=16384
-VP_MAX_USER_REQUEST_CHARS=4000000
-VP_MAX_ATTACHMENT_CHARS=1000000
-VP_CONTEXT_AUTO_COMPACT_RATIO=0.9
-VP_CONTEXT_DANGER_COMPACT_RATIO=0.95
-VP_CONTEXT_HISTORY_SOFT_LIMIT_TOKENS=120000
-VP_CONTEXT_EXACT_STALE_SEC=60
+VA_MAX_OUTPUT_TOKENS=16384
+VA_MAX_USER_REQUEST_CHARS=4000000
+VA_MAX_ATTACHMENT_CHARS=1000000
+VA_CONTEXT_AUTO_COMPACT_RATIO=0.9
+VA_CONTEXT_DANGER_COMPACT_RATIO=0.95
+VA_CONTEXT_HISTORY_SOFT_LIMIT_TOKENS=120000
+VA_CONTEXT_EXACT_STALE_SEC=60
 ```
 
 这个值是单次模型调用的输出上限，不是整个任务的总上限。默认 16384 适合 GPT-5.4 这类大上下文模型的长材料问答；长任务仍应通过多轮 model/tool loop 完成，而不是依赖一次 128K 级别的超大回复。
-`VP_MAX_USER_REQUEST_CHARS` 是当前用户输入的安全字符上限；实际进入模型的内容还会按当前模型 context window 和输出预留做 token 预算裁剪。
+`VA_MAX_USER_REQUEST_CHARS` 是当前用户输入的安全字符上限；实际进入模型的内容还会按当前模型 context window 和输出预留做 token 预算裁剪。
 
-Context 状态采用 Codex 风格的轻量常驻显示：聊天主路径只使用缓存或 quick 估算，不再每轮阻塞式精算 tokenizer。`/status` 会读取当前 thread 的 context 状态并打开详情；`/compact` 会手动整理旧历史并在运行记录中显示 context compaction 事件。自动整理默认在预计使用达到窗口 90% 后 exact 复核，95% 进入危险整理线；真实 provider `input_tokens` 可用时优先于本地完整 payload 估算。`VP_CONTEXT_HISTORY_SOFT_LIMIT_TOKENS` 只用于旧聊天/工具输出噪音，不适用于当前用户输入或附件原文。
+Context 状态采用 Codex 风格的轻量常驻显示：聊天主路径只使用缓存或 quick 估算，不再每轮阻塞式精算 tokenizer。`/status` 会读取当前 thread 的 context 状态并打开详情；`/compact` 会手动整理旧历史并在运行记录中显示 context compaction 事件。自动整理默认在预计使用达到窗口 90% 后 exact 复核，95% 进入危险整理线；真实 provider `input_tokens` 可用时优先于本地完整 payload 估算。`VA_CONTEXT_HISTORY_SOFT_LIMIT_TOKENS` 只用于旧聊天/工具输出噪音，不适用于当前用户输入或附件原文。
 
 ## Python Commands
 
@@ -52,7 +52,7 @@ Context 状态采用 Codex 风格的轻量常驻显示：聊天主路径只使�
 
 ## Command Safety
 
-`exec_command` 继续使用保守 allowlist，`VP_ALLOWED_COMMANDS` 是完整覆盖，不是增量追加。命令执行受当前权限和路径边界约束，并检查 `rg /etc`、`git -C /tmp`、`python /tmp/a.py` 这类路径参数。任何具体 `git push` 在所有允许 shell 的权限档位下都必须逐次审批，审批绑定精确命令、仓库、remote URL 指纹、branch 和 HEAD。Skill 或文件里的命令文字不构成执行授权；危险删除和下载后直接交给 shell 的模式仍保持阻止。
+`exec_command` 继续使用保守 allowlist，`VA_ALLOWED_COMMANDS` 是完整覆盖，不是增量追加。命令执行受当前权限和路径边界约束，并检查 `rg /etc`、`git -C /tmp`、`python /tmp/a.py` 这类路径参数。任何具体 `git push` 在所有允许 shell 的权限档位下都必须逐次审批，审批绑定精确命令、仓库、remote URL 指纹、branch 和 HEAD。Skill 或文件里的命令文字不构成执行授权；危险删除和下载后直接交给 shell 的模式仍保持阻止。
 
 ## Session = Thread
 
@@ -64,7 +64,7 @@ Context 状态采用 Codex 风格的轻量常驻显示：聊天主路径只使�
 
 ## 这是什么
 
-Vintage Programmer 是一个本地运行的 AI Agent 工作台，默认主 agent 是 `vintage_programmer`。
+Validation Assistant 是一个本地运行的 AI Agent 工作台，默认主 agent 是 `validation_assistant`。
 
 它把这些能力放在同一个仓库里：
 
@@ -80,7 +80,7 @@ Vintage Programmer 是一个本地运行的 AI Agent 工作台，默认主 agent
 ## 为什么做这个项目
 
 很多 AI 聊天产品更关注最终回答。
-Vintage Programmer 更关注回答背后的执行过程。
+Validation Assistant 更关注回答背后的执行过程。
 
 它适合这种场景：
 
@@ -111,7 +111,7 @@ Vintage Programmer 更关注回答背后的执行过程。
 ## 和普通 Chat UI 有什么不同
 
 普通 Chat UI 更关注最终回答。
-Vintage Programmer 更关注 Agent 的执行过程可见性。
+Validation Assistant 更关注 Agent 的执行过程可见性。
 
 默认可以看到：
 
@@ -176,40 +176,40 @@ Windows 版本的推荐启动方式见 [README.windows.md](README.windows.md)。
 ### OpenAI 官方
 
 ```env
-VP_LLM_PROVIDER=openai
-VP_OPENAI_API_KEY=your_key
-VP_OPENAI_DEFAULT_MODEL=gpt-5.4
+VA_LLM_PROVIDER=openai
+VA_OPENAI_API_KEY=your_key
+VA_OPENAI_DEFAULT_MODEL=gpt-5.4
 ```
 
-Vintage Programmer 现在只使用显式 provider API key 配置，不再自动回退到本地账号认证文件。
+Validation Assistant 现在只使用显式 provider API key 配置，不再自动回退到本地账号认证文件。
 
 ### OpenAI-compatible 网关
 
 ```env
-VP_LLM_PROVIDER=openai_compatible
-VP_OPENAI_COMPAT_API_KEY=your_gateway_key
-VP_OPENAI_COMPAT_BASE_URL=https://your-gateway.example.com/v1
-VP_OPENAI_COMPAT_CA_CERT_PATH=/absolute/path/to/your-root-ca.pem
-VP_OPENAI_COMPAT_DEFAULT_MODEL=gpt-5.4
+VA_LLM_PROVIDER=openai_compatible
+VA_OPENAI_COMPAT_API_KEY=your_gateway_key
+VA_OPENAI_COMPAT_BASE_URL=https://your-gateway.example.com/v1
+VA_OPENAI_COMPAT_CA_CERT_PATH=/absolute/path/to/your-root-ca.pem
+VA_OPENAI_COMPAT_DEFAULT_MODEL=gpt-5.4
 ```
 
 ### OpenRouter
 
 ```env
-VP_LLM_PROVIDER=openrouter
-VP_OPENROUTER_API_KEY=your_openrouter_key
-VP_OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
-VP_OPENROUTER_DEFAULT_MODEL=google/gemma-4-31b-it:free
-VP_OPENROUTER_MODEL_FALLBACKS=nvidia/nemotron-3-super-120b-a12b:free
+VA_LLM_PROVIDER=openrouter
+VA_OPENROUTER_API_KEY=your_openrouter_key
+VA_OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
+VA_OPENROUTER_DEFAULT_MODEL=google/gemma-4-31b-it:free
+VA_OPENROUTER_MODEL_FALLBACKS=nvidia/nemotron-3-super-120b-a12b:free
 ```
 
 ### 本地 Ollama
 
 ```env
-VP_LLM_PROVIDER=ollama
-VP_OLLAMA_BASE_URL=http://127.0.0.1:11434/v1
-VP_OLLAMA_API_KEY=ollama
-VP_OLLAMA_DEFAULT_MODEL=qwen2.5-coder:7b
+VA_LLM_PROVIDER=ollama
+VA_OLLAMA_BASE_URL=http://127.0.0.1:11434/v1
+VA_OLLAMA_API_KEY=ollama
+VA_OLLAMA_DEFAULT_MODEL=qwen2.5-coder:7b
 ```
 
 更多选项见 [.env.example](.env.example)。
@@ -230,12 +230,12 @@ VP_OLLAMA_DEFAULT_MODEL=qwen2.5-coder:7b
 
 ## Agent 规范
 
-默认主 agent 是 `vintage_programmer`。
+默认主 agent 是 `validation_assistant`。
 它的核心 Markdown 规范文件按 locale 存放：
 
-- `agents/vintage_programmer/locales/zh-CN/`
-- `agents/vintage_programmer/locales/en/`
-- `agents/vintage_programmer/locales/ja-JP/`
+- `agents/validation_assistant/locales/zh-CN/`
+- `agents/validation_assistant/locales/en/`
+- `agents/validation_assistant/locales/ja-JP/`
 
 每个目录包含 `soul.md`、`identity.md`、`agent.md`、`tools.md`。根目录同名文件仅作为旧 workspace fallback。
 
@@ -248,7 +248,7 @@ skills/builtin/<skill_name>/SKILL.md
 skills/team/<skill_name>/SKILL.md
 ```
 
-两类 Skill 都不绑定具体 Agent。当前由 Vintage Programmer 发现启用的轻量 metadata，选中后再加载完整正文。提交 Team Skill 前运行 `python scripts/validate_skills.py`。
+两类 Skill 都不绑定具体 Agent。当前由 Validation Assistant 发现启用的轻量 metadata，选中后再加载完整正文。提交 Team Skill 前运行 `python scripts/validate_skills.py`。
 
 ## Inline Code
 
@@ -266,7 +266,7 @@ skills/team/<skill_name>/SKILL.md
 
 ```text
 已保存的 Settings 选择
-> 服务端默认语言（VP_DEFAULT_LOCALE）
+> 服务端默认语言（VA_DEFAULT_LOCALE）
 > 浏览器语言
 > ja-JP 兜底
 ```

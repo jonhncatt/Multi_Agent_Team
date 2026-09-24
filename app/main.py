@@ -119,17 +119,17 @@ from app.thread_record import agent_state_compat, normalize_pending_interaction
 from app.thread_transcript import normalize_thread_transcript, pending_tool_calls
 from app.thread_titles import sanitize_generated_thread_title
 from app.update_manager import AppUpdateManager
-from app.vintage_programmer_runtime import VintageProgrammerRuntime, default_loop_safeguards
+from app.validation_assistant_runtime import ValidationAssistantRuntime, default_loop_safeguards
 from app.workbench import WorkbenchStore
 
 _BACKEND_STARTUP_TIMER.mark("dependencies_imported")
 
-APP_TITLE = "Vintage Programmer"
+APP_TITLE = "Validation Assistant"
 config = load_config()
 _BACKEND_STARTUP_TIMER.mark("config_loaded")
 DEFAULT_CONTEXT_METER_MAX_OUTPUT_TOKENS = int(config.max_output_tokens)
 REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
-AGENT_DIR = REPOSITORY_ROOT / "agents" / "vintage_programmer"
+AGENT_DIR = REPOSITORY_ROOT / "agents" / "validation_assistant"
 project_store = ProjectStore(config.projects_registry_path, default_root=config.workspace_root)
 project_profile_registry = ProjectProfileRegistry(REPOSITORY_ROOT)
 session_store = SessionStore(
@@ -144,7 +144,7 @@ provider_model_catalog = ProviderModelCatalog(
     Path(__file__).resolve().parent / "data" / "runtime" / "provider_models.json"
 )
 _BACKEND_STARTUP_TIMER.mark("stores_initialized")
-vintage_programmer_runtime = VintageProgrammerRuntime(
+validation_assistant_runtime = ValidationAssistantRuntime(
     config=config,
     agent_dir=AGENT_DIR,
 )
@@ -154,7 +154,7 @@ workbench_store = WorkbenchStore(
     agent_dir=AGENT_DIR,
 )
 _BACKEND_STARTUP_TIMER.mark("workbench_initialized")
-APP_VERSION = "3.1.7"
+APP_VERSION = "1.0.0"
 DESKTOP_CONTROL_TOKEN_PATH = Path(__file__).resolve().parent / "data" / "runtime" / "desktop-control-token"
 DESKTOP_EXIT_GRACE_SEC = 5.0
 app_update_manager = AppUpdateManager(app_dir=Path(__file__).resolve().parent.parent)
@@ -184,7 +184,7 @@ def _attachment_preview_chars_for_model(model: str | None, max_output_tokens: in
         ),
     )
 _provider_runtime_lock = threading.Lock()
-_provider_runtime_cache: dict[str, VintageProgrammerRuntime] = {}
+_provider_runtime_cache: dict[str, ValidationAssistantRuntime] = {}
 _provider_payload_lock = threading.Lock()
 _provider_payload_cache: dict[str, Any] = {}
 _active_chat_runs_lock = threading.Lock()
@@ -273,7 +273,7 @@ def _schedule_desktop_exit(run_ids: list[str]) -> bool:
     threading.Thread(
         target=_desktop_exit_worker,
         args=(list(run_ids),),
-        name="vp-desktop-exit",
+        name="va-desktop-exit",
         daemon=True,
     ).start()
     return True
@@ -294,7 +294,7 @@ def _schedule_desktop_restart(run_ids: list[str]) -> bool:
     threading.Thread(
         target=_desktop_exit_worker,
         args=(list(run_ids),),
-        name="vp-desktop-restart",
+        name="va-desktop-restart",
         daemon=True,
     ).start()
     return True
@@ -406,7 +406,7 @@ def _git_value(*args: str) -> str:
 
 def _resolve_build_version() -> str:
     override = str(
-        os.environ.get("VP_BUILD_VERSION") or ""
+        os.environ.get("VA_BUILD_VERSION") or ""
     ).strip()
     if override:
         return override
@@ -810,12 +810,12 @@ def get_project_store() -> ProjectStore:
     return project_store
 
 
-def get_vintage_programmer_runtime() -> VintageProgrammerRuntime:
-    return vintage_programmer_runtime
+def get_validation_assistant_runtime() -> ValidationAssistantRuntime:
+    return validation_assistant_runtime
 
 
 def get_tool_executor() -> Any:
-    return get_vintage_programmer_runtime()._backend.tools
+    return get_validation_assistant_runtime()._backend.tools
 
 
 def _runtime_meta_payload() -> dict[str, Any]:
@@ -1061,7 +1061,7 @@ def _provider_options_payload(*, refresh: bool = False) -> list[dict[str, object
 
 
 def _runtime_descriptor(*, locale: str | None = None, refresh: bool = False) -> dict[str, object]:
-    runtime = get_vintage_programmer_runtime()
+    runtime = get_validation_assistant_runtime()
     if refresh and hasattr(runtime, "invalidate_descriptor_cache"):
         try:
             runtime.invalidate_descriptor_cache()
@@ -1076,7 +1076,7 @@ def _runtime_descriptor(*, locale: str | None = None, refresh: bool = False) -> 
 
 
 def _invalidate_runtime_descriptor_caches() -> None:
-    runtimes: list[Any] = [get_vintage_programmer_runtime()]
+    runtimes: list[Any] = [get_validation_assistant_runtime()]
     with _provider_runtime_lock:
         runtimes.extend(_provider_runtime_cache.values())
     for runtime in runtimes:
@@ -1087,15 +1087,15 @@ def _invalidate_runtime_descriptor_caches() -> None:
                 continue
 
 
-def _provider_runtime(provider: str) -> tuple[AppConfig, VintageProgrammerRuntime]:
+def _provider_runtime(provider: str) -> tuple[AppConfig, ValidationAssistantRuntime]:
     normalized = normalize_llm_provider_name(provider or config.llm_provider)
     if normalized == config.llm_provider:
-        return config, vintage_programmer_runtime
+        return config, validation_assistant_runtime
     with _provider_runtime_lock:
         cached = _provider_runtime_cache.get(normalized)
         if cached is None:
             provider_config = build_provider_config(config, normalized)
-            cached = VintageProgrammerRuntime(
+            cached = ValidationAssistantRuntime(
                 config=provider_config,
                 agent_dir=AGENT_DIR,
             )
@@ -1362,10 +1362,10 @@ def desktop_lifecycle() -> dict[str, Any]:
 
 @app.post("/api/desktop/exit")
 def desktop_exit(
-    x_vp_desktop_token: str = Header(default="", alias="X-VP-Desktop-Token"),
+    x_va_desktop_token: str = Header(default="", alias="X-VA-Desktop-Token"),
 ) -> dict[str, Any]:
     expected_token = _read_desktop_control_token()
-    supplied_token = str(x_vp_desktop_token or "").strip()
+    supplied_token = str(x_va_desktop_token or "").strip()
     if not expected_token or not supplied_token or not secrets.compare_digest(
         supplied_token,
         expected_token,
@@ -1399,10 +1399,10 @@ def desktop_exit(
 
 @app.post("/api/desktop/restart")
 def desktop_restart(
-    x_vp_desktop_token: str = Header(default="", alias="X-VP-Desktop-Token"),
+    x_va_desktop_token: str = Header(default="", alias="X-VA-Desktop-Token"),
 ) -> dict[str, Any]:
     expected_token = _read_desktop_control_token()
-    supplied_token = str(x_vp_desktop_token or "").strip()
+    supplied_token = str(x_va_desktop_token or "").strip()
     if not expected_token or not supplied_token or not secrets.compare_digest(
         supplied_token,
         expected_token,
@@ -1525,7 +1525,7 @@ def system_folder_picker(req: FolderPickerRequest) -> FolderPickerResponse:
 
 @app.get("/api/workbench/tools", response_model=WorkbenchToolsResponse)
 def workbench_tools() -> WorkbenchToolsResponse:
-    payload = get_vintage_programmer_runtime().descriptor()
+    payload = get_validation_assistant_runtime().descriptor()
     tools = list((payload.get("tools") or []))
     return WorkbenchToolsResponse(tools=[ToolDescriptor(**item) for item in tools if isinstance(item, dict)])
 
@@ -2794,7 +2794,7 @@ def sandbox_drill(req: SandboxDrillRequest) -> SandboxDrillResponse:
                 steps,
                 name="exec_command_python_version",
                 ok=True,
-                detail=f"skipped: {python_command} is not in VP_ALLOWED_COMMANDS",
+                detail=f"skipped: {python_command} is not in VA_ALLOWED_COMMANDS",
                 started_at=started,
             )
 
@@ -3077,7 +3077,7 @@ def _queued_cancelled_chat_response(
         activity=MessageActivity(**activity),
         context_meter=context_meter,
         inspector={
-            "agent": get_vintage_programmer_runtime().descriptor(),
+            "agent": get_validation_assistant_runtime().descriptor(),
             "notes": ["cancelled_while_queued"],
             "run_state": {
                 "phase": "queue",
@@ -3519,8 +3519,8 @@ def _process_chat_request(
         return ChatResponse(
             session_id=seed_session["id"],
             run_id=None,
-            agent_id="vintage_programmer",
-            agent_title="Vintage Programmer",
+            agent_id="validation_assistant",
+            agent_title="Validation Assistant",
             selected_business_module="llm_router_core",
             effective_model="",
             queue_wait_ms=0,
@@ -3536,7 +3536,7 @@ def _process_chat_request(
             session_token_totals=TokenTotals(),
             global_token_totals=TokenTotals(),
             inspector={
-                "agent": get_vintage_programmer_runtime().descriptor(),
+                "agent": get_validation_assistant_runtime().descriptor(),
                 "notes": ["missing_model_auth"],
                 "run_state": {
                     "phase": "report",
@@ -4873,8 +4873,8 @@ def _process_chat_request(
             thread_id=session["id"],
             turn_id=response_turn_id,
             run_id=run_id,
-            agent_id="vintage_programmer",
-            agent_title=str((inspector.get("agent") or {}).get("title") or "Vintage Programmer"),
+            agent_id="validation_assistant",
+            agent_title=str((inspector.get("agent") or {}).get("title") or "Validation Assistant"),
             selected_business_module="llm_router_core",
             effective_model=selected_model,
             queue_wait_ms=queue_wait_ms,

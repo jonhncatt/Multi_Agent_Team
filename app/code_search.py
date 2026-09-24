@@ -34,15 +34,15 @@ RUNTIME_SEARCH_EXCLUDED_PATHS = tuple(f"app/data/{name}" for name in (
 
 
 def runtime_search_scope(root: Path) -> tuple[list[str], bool]:
-    """VP-only relative exclusions, never generic 'data' basename exclusions.
+    """VA-only relative exclusions, never generic 'data' basename exclusions.
 
     Explicit roots inside a runtime subtree opt in to its ignored files.
     Markers are filesystem checks only, usable by the isolated stdlib worker.
     """
     for project in (root, *root.parents):
         if not ((project / "app/local_tools.py").is_file()
-                and (project / "app/vintage_programmer_runtime.py").is_file()
-                and (project / "project_profiles/builtin/vintage-programmer/AGENTS.md").is_file()):
+                and (project / "app/validation_assistant_runtime.py").is_file()
+                and (project / "project_profiles/builtin/validation-assistant/AGENTS.md").is_file()):
             continue
         paths = [project / path for path in RUNTIME_SEARCH_EXCLUDED_PATHS]
         if any(root == path or path in root.parents for path in paths):
@@ -246,7 +246,7 @@ def run_search(request: dict[str, Any], *, cancelled: Callable[[], bool],
             publish({"error": str(exc)})
         finally:
             publish(None)
-    reader = threading.Thread(target=read, name="vp-code-search-output", daemon=True)
+    reader = threading.Thread(target=read, name="va-code-search-output", daemon=True)
     result: dict[str, Any] = {"matches": [], "stop_reason": "worker_failed"}
     try:
         if not direct:

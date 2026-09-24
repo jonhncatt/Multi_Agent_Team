@@ -37,16 +37,16 @@ def test_windows_folder_picker_returns_selected_directory_without_console(monkey
     assert "PickFolders = 0x00000020" in script
     assert "ForceFileSystem = 0x00000040" in script
     assert "CommonFolderDialog]::Show" in script
-    assert "NativeWindow]::FindVintageProgrammer()" in script
+    assert "NativeWindow]::FindValidationAssistant()" in script
     assert "$ownerHandle" in script
-    assert "FindWindow(null, \"Vintage Programmer\")" in script
+    assert "FindWindow(null, \"Validation Assistant\")" in script
     assert "EnumWindows" in script
-    assert "Contains(\"Vintage Programmer\")" in script
+    assert "Contains(\"Validation Assistant\")" in script
     assert "System.Windows.Forms.Form" not in script
     assert "TopMost" not in script
     assert "FolderBrowserDialog" not in script
     assert captured["creationflags"] == 0x08000000
-    assert captured["env"]["VP_FOLDER_PICKER_INITIAL"] == str(tmp_path.resolve())
+    assert captured["env"]["VA_FOLDER_PICKER_INITIAL"] == str(tmp_path.resolve())
 
 
 def test_macos_folder_picker_cancel_is_not_an_error(monkeypatch, tmp_path: Path) -> None:

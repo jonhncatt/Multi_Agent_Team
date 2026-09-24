@@ -48,7 +48,7 @@ function Get-EnvFirst {
   return $null
 }
 
-$providerRaw = Get-EnvFirst @("VP_LLM_PROVIDER", "VP_MODEL_PROVIDER")
+$providerRaw = Get-EnvFirst @("VA_LLM_PROVIDER", "VA_MODEL_PROVIDER")
 if (-not $providerRaw) { $providerRaw = "openai" }
 $llmProvider = $providerRaw.ToLowerInvariant()
 switch ($llmProvider) {
@@ -58,30 +58,30 @@ switch ($llmProvider) {
 }
 
 $expectedApiKeyEnv = switch ($llmProvider) {
-  "openai" { "VP_OPENAI_API_KEY" }
-  "openai_compatible" { "VP_OPENAI_COMPAT_API_KEY" }
-  "openrouter" { "VP_OPENROUTER_API_KEY" }
-  "deepseek" { "VP_DEEPSEEK_API_KEY" }
-  "qwen" { "VP_DASHSCOPE_API_KEY" }
-  "moonshot" { "VP_MOONSHOT_API_KEY" }
-  "groq" { "VP_GROQ_API_KEY" }
-  "ollama" { "VP_OLLAMA_API_KEY" }
-  default { "VP_LLM_API_KEY" }
+  "openai" { "VA_OPENAI_API_KEY" }
+  "openai_compatible" { "VA_OPENAI_COMPAT_API_KEY" }
+  "openrouter" { "VA_OPENROUTER_API_KEY" }
+  "deepseek" { "VA_DEEPSEEK_API_KEY" }
+  "qwen" { "VA_DASHSCOPE_API_KEY" }
+  "moonshot" { "VA_MOONSHOT_API_KEY" }
+  "groq" { "VA_GROQ_API_KEY" }
+  "ollama" { "VA_OLLAMA_API_KEY" }
+  default { "VA_LLM_API_KEY" }
 }
 
-$providerApiKey = Get-EnvFirst @($expectedApiKeyEnv, "VP_LLM_API_KEY")
+$providerApiKey = Get-EnvFirst @($expectedApiKeyEnv, "VA_LLM_API_KEY")
 $hasApiKey = [bool]$providerApiKey
 if ($llmProvider -eq "ollama") {
   $hasApiKey = $true
 }
 
 if (-not $hasApiKey) {
-  Write-Warning "No API key found for provider=$llmProvider. Expected env: $expectedApiKeyEnv (or VP_LLM_API_KEY)."
+  Write-Warning "No API key found for provider=$llmProvider. Expected env: $expectedApiKeyEnv (or VA_LLM_API_KEY)."
 }
 
-$appModule = Get-EnvFirst @("VP_APP_MODULE")
+$appModule = Get-EnvFirst @("VA_APP_MODULE")
 if (-not $appModule) { $appModule = "app.main:app" }
-$appPort = Get-EnvFirst @("VP_APP_PORT")
+$appPort = Get-EnvFirst @("VA_APP_PORT")
 if (-not $appPort) { $appPort = "8080" }
 
 $env:OFFICETOOL_APP_PROFILE = if ($env:OFFICETOOL_APP_PROFILE) { $env:OFFICETOOL_APP_PROFILE } else { "multi_agent_robot" }

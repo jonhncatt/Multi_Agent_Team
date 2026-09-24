@@ -47,21 +47,21 @@ jobs:
           --clean
           --onefile
           --noconsole
-          --icon desktop/windows/assets/vintage_programmer_shell.ico
-          --add-data "desktop/windows/assets/vintage_programmer.ico;desktop/windows/assets"
-          --name VintageProgrammer
+          --icon desktop/windows/assets/validation_assistant_shell.ico
+          --add-data "desktop/windows/assets/validation_assistant.ico;desktop/windows/assets"
+          --name ValidationAssistant
           desktop/launcher.py
 
       - name: Verify Windows Shell can extract the executable icon
-        run: python desktop/windows/verify_executable_icon.py dist/VintageProgrammer.exe
+        run: python desktop/windows/verify_executable_icon.py dist/ValidationAssistant.exe
 
       - name: Smoke-test executable configuration
         shell: pwsh
         run: |
-          $env:VP_DESKTOP_BROWSER_PATH = "$env:WINDIR\System32\notepad.exe"
+          $env:VA_DESKTOP_BROWSER_PATH = "$env:WINDIR\System32\notepad.exe"
           $diagnosticsPath = Join-Path $PWD "launcher-diagnostics.json"
           $launcher = Start-Process `
-            -FilePath "dist\VintageProgrammer.exe" `
+            -FilePath "dist\ValidationAssistant.exe" `
             -ArgumentList @(
               "--dry-run",
               "--project-root", $PWD.Path,
@@ -86,9 +86,9 @@ jobs:
       - name: Upload Windows executable
         uses: actions/upload-artifact@v4
         with:
-          name: vintage-programmer-windows-launcher
+          name: validation-assistant-windows-launcher
           path: |
-            dist/VintageProgrammer.exe
+            dist/ValidationAssistant.exe
             desktop/windows/README.md
           if-no-files-found: error
           retention-days: 14

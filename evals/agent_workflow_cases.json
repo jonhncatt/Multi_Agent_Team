@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "suite": "vintage_programmer_agent_workflow",
+  "suite": "validation_assistant_agent_workflow",
   "description": "Live scenarios for run-time guidance, model-selected Subagent delegation, compressed long Threads, Team Skill maintenance, and failed-test recovery.",
   "reserved_input_modalities": ["pdf", "excel", "markdown", "c", "cpp"],
   "cases": [

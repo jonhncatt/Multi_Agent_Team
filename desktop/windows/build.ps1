@@ -25,12 +25,12 @@ if (-not (Test-Path $Python)) {
     --clean `
     --onefile `
     --noconsole `
-    --icon desktop\windows\assets\vintage_programmer_shell.ico `
-    --add-data "desktop\windows\assets\vintage_programmer.ico;desktop\windows\assets" `
-    --name VintageProgrammer `
+    --icon desktop\windows\assets\validation_assistant_shell.ico `
+    --add-data "desktop\windows\assets\validation_assistant.ico;desktop\windows\assets" `
+    --name ValidationAssistant `
     desktop\launcher.py
 
-& $Python desktop\windows\verify_executable_icon.py dist\VintageProgrammer.exe
+& $Python desktop\windows\verify_executable_icon.py dist\ValidationAssistant.exe
 
-Write-Host "Built: $RepoRoot\dist\VintageProgrammer.exe"
-Write-Host "Copy VintageProgrammer.exe into $RepoRoot before double-clicking it."
+Write-Host "Built: $RepoRoot\dist\ValidationAssistant.exe"
+Write-Host "Copy ValidationAssistant.exe into $RepoRoot before double-clicking it."

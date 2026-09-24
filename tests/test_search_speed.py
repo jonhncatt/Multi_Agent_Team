@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.local_tools import LocalToolExecutor
-from app.vintage_programmer_runtime import VintageProgrammerRuntime
+from app.validation_assistant_runtime import ValidationAssistantRuntime
 from tests.test_local_tools_public_surface import _config
 
 
@@ -33,7 +33,7 @@ def test_glob_project_scope_and_explicit_all_files(tmp_path, monkeypatch, fallba
 
 
 def make_runtime(monkeypatch, execute, allowed=True):
-    runtime = object.__new__(VintageProgrammerRuntime)
+    runtime = object.__new__(ValidationAssistantRuntime)
     local = threading.local()
     local.project_root = "test-project"
     tools = SimpleNamespace(_runtime_ctx=local, execute=execute, _current_cancel_requested=lambda: False)
@@ -85,8 +85,8 @@ def test_cancelled_parallel_batch_does_not_start_io(monkeypatch):
 
 
 def test_runtime_parallel_batch_executes_each_read_once(tmp_path, monkeypatch):
-    from tests.test_vintage_programmer_runtime import _write_specs, _FakeBackend, _FakeMessage, ChatSettings
-    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    from tests.test_validation_assistant_runtime import _write_specs, _FakeBackend, _FakeMessage, ChatSettings
+    agent_dir = tmp_path / "agents" / "validation_assistant"
     _write_specs(agent_dir)
     config = _config(tmp_path)
     backend = _FakeBackend([
@@ -107,7 +107,7 @@ def test_runtime_parallel_batch_executes_each_read_once(tmp_path, monkeypatch):
         return original(name, arguments)
 
     monkeypatch.setattr(backend.tools, "execute", execute)
-    runtime = VintageProgrammerRuntime(config=config, kernel_runtime=object(), agent_dir=agent_dir, backend=backend)
+    runtime = ValidationAssistantRuntime(config=config, kernel_runtime=object(), agent_dir=agent_dir, backend=backend)
     result = runtime.run(
         message="Read a.txt and b.txt", settings=ChatSettings(model="gpt-test", enable_tools=True),
         context={"session_id": "parallel-test", "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},

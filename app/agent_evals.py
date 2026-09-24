@@ -18,12 +18,12 @@ from uuid import uuid4
 from app.config import AppConfig, build_provider_config, load_config
 from app.models import ChatSettings
 from app.tool_failures import classify_tool_event, failure_key
-from app.vintage_programmer_runtime import VintageProgrammerRuntime
+from app.validation_assistant_runtime import ValidationAssistantRuntime
 
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CASES_PATH = ROOT / "evals" / "agent_quality_cases.json"
-AGENT_DIR = ROOT / "agents" / "vintage_programmer"
+AGENT_DIR = ROOT / "agents" / "validation_assistant"
 SCHEMA_VERSION = 1
 SUPPORTED_CASE_KIND = "agent_workspace"
 SUPPORTED_INPUT_MODALITIES = {"text", "markdown", "source", "c", "cpp", "pdf", "excel"}
@@ -277,7 +277,7 @@ def _prepare_team_skill_seed(
         return None
     source = (workspace / str(seed.get("source") or "")).resolve()
     skill_name = str(seed.get("name") or "").strip()
-    target = workspace / ".eval_runtime" / "vp_install" / "skills" / "team" / skill_name
+    target = workspace / ".eval_runtime" / "va_install" / "skills" / "team" / skill_name
     target.parent.mkdir(parents=True, exist_ok=True)
     if target.exists():
         shutil.rmtree(target)
@@ -581,7 +581,7 @@ def execute_authoritative_verifier(
     configured_script = str(
         verifier_script
         if verifier_script is not None
-        else os.environ.get("VP_EVAL_CPP_VERIFY_SCRIPT", "")
+        else os.environ.get("VA_EVAL_CPP_VERIFY_SCRIPT", "")
     ).strip()
     if not bool(verification.get("use_company_wrapper", True)):
         configured_script = ""
@@ -623,9 +623,9 @@ def execute_authoritative_verifier(
             check=False,
             env={
                 **os.environ,
-                "VP_EVAL_WORKSPACE": str(workspace),
-                "VP_EVAL_TEAM_SKILLS_ROOT": str(
-                    workspace / ".eval_runtime" / "vp_install" / "skills" / "team"
+                "VA_EVAL_WORKSPACE": str(workspace),
+                "VA_EVAL_TEAM_SKILLS_ROOT": str(
+                    workspace / ".eval_runtime" / "va_install" / "skills" / "team"
                 ),
             },
         )
@@ -695,11 +695,11 @@ def _isolated_config(base: AppConfig, workspace: Path) -> AppConfig:
     )
 
 
-def _runtime_factory(config: AppConfig) -> VintageProgrammerRuntime:
-    return VintageProgrammerRuntime(
+def _runtime_factory(config: AppConfig) -> ValidationAssistantRuntime:
+    return ValidationAssistantRuntime(
         config=config,
         agent_dir=AGENT_DIR,
-        skill_repository_root=config.workspace_root / ".eval_runtime" / "vp_install",
+        skill_repository_root=config.workspace_root / ".eval_runtime" / "va_install",
     )
 
 
@@ -1179,7 +1179,7 @@ def run_eval_attempt(
         }
     elif protected_changes and not (
         bool(verification.get("use_company_wrapper", True))
-        and str(verifier_script or os.environ.get("VP_EVAL_CPP_VERIFY_SCRIPT", "")).strip()
+        and str(verifier_script or os.environ.get("VA_EVAL_CPP_VERIFY_SCRIPT", "")).strip()
     ):
         authoritative = {
             "status": "failed",

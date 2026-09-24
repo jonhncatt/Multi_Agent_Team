@@ -1,8 +1,8 @@
 import os
 from pathlib import Path
 
-configured = os.environ.get("VP_EVAL_TEAM_SKILLS_ROOT", "").strip()
-root = Path(configured) if configured else Path(".eval_runtime/vp_install/skills/team")
+configured = os.environ.get("VA_EVAL_TEAM_SKILLS_ROOT", "").strip()
+root = Path(configured) if configured else Path(".eval_runtime/va_install/skills/team")
 skill = root / "protocol-review" / "SKILL.md"
 if not skill.is_file():
     print("team skill missing")

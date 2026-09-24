@@ -1,10 +1,10 @@
-# Vintage Programmer 内部设计手册
+# Validation Assistant 内部设计手册
 
 本文描述当前 `main` 的稳定架构。它面向项目维护者，不承担版本流水账；历史变化请查看 [`releases/`](releases/) 和 Git 历史。
 
 ## 1. 产品定位
 
-Vintage Programmer 是本地运行的单主 Agent 工作台。当前稳定路径使用 OpenAI-compatible Chat Completions 消息循环：模型选择工具和工作策略，Harness 管理边界、执行、Thread 生命周期和事实记录，前端展示真实进度。
+Validation Assistant 是本地运行的单主 Agent 工作台。当前稳定路径使用 OpenAI-compatible Chat Completions 消息循环：模型选择工具和工作策略，Harness 管理边界、执行、Thread 生命周期和事实记录，前端展示真实进度。
 
 ```text
 用户请求
@@ -117,7 +117,7 @@ Harness 负责：
 | Auto | 当前 Project 读写 | 当前 Project 内安全命令 | 禁止 |
 | Full Access | 完整本机文件系统读写 | 可在任意本机目录执行安全命令 | 允许 |
 
-选择 Full Access 就是本轮完整文件系统授权，不再需要 `VP_ALLOW_ANY_PATH`。
+选择 Full Access 就是本轮完整文件系统授权，不再需要 `VA_ALLOW_ANY_PATH`。
 
 权限放宽不取消其他边界：Builtin Skill 仍然只读；危险命令仍会拒绝；网络来源代码、供应链操作和外部写入继续按策略审批。每一次 `git push` 都需要绑定精确命令、仓库、remote、分支和 HEAD 的一次性批准。
 
@@ -127,7 +127,7 @@ Skills 独立于当前业务 Project：
 
 ```text
 skills/builtin/<name>/SKILL.md   # 产品维护，只读
-skills/team/<name>/SKILL.md      # 团队维护，随 VP Git 仓库共享
+skills/team/<name>/SKILL.md      # 团队维护，随 VA Git 仓库共享
 ```
 
 初始上下文只列出启用 Skill 的轻量 metadata 和绝对 `SKILL.md` 路径。模型需要使用时先通过普通 `read_file` 读取完整说明；附属脚本通过普通 `exec_command` 执行。
@@ -163,8 +163,8 @@ skills/team/<name>/SKILL.md      # 团队维护，随 VP Git 仓库共享
 | 领域 | 主要文件 |
 | --- | --- |
 | HTTP / SSE / Thread API | `app/main.py` |
-| 主模型循环 | `app/vintage_programmer_runtime.py` |
-| Provider 和 structured tools | `app/vp_runtime_backend.py` |
+| 主模型循环 | `app/validation_assistant_runtime.py` |
+| Provider 和 structured tools | `app/va_runtime_backend.py` |
 | 本地工具实现 | `app/local_tools.py` |
 | 工具与路径校验 | `app/action_validator.py`, `app/runtime_boundary.py` |
 | Thread / Trace 存储 | `app/storage.py`, `app/thread_record.py`, `app/thread_transcript.py`, `app/turn_trace.py` |

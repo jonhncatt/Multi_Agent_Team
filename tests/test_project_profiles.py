@@ -39,9 +39,9 @@ def test_project_profile_registry_lists_scoped_profiles_and_reads_instructions(t
     _write_profile(
         tmp_path,
         scope="builtin",
-        profile_id="vintage-programmer",
-        display_name="Vintage Programmer",
-        instructions="VP instructions",
+        profile_id="validation-assistant",
+        display_name="Validation Assistant",
+        instructions="VA instructions",
     )
     _write_profile(
         tmp_path,
@@ -56,7 +56,7 @@ def test_project_profile_registry_lists_scoped_profiles_and_reads_instructions(t
     profile, instructions = registry.read_instructions("team:pcbasher")
 
     assert [item["profile_key"] for item in rows] == [
-        "builtin:vintage-programmer",
+        "builtin:validation-assistant",
         "team:pcbasher",
     ]
     assert profile["display_name"] == "PCBasher"
@@ -79,11 +79,11 @@ def test_project_profile_registry_ignores_incomplete_profiles_and_rejects_unknow
         registry.get("incomplete")
 
 
-def test_repository_builtin_vintage_programmer_profile_is_valid() -> None:
+def test_repository_builtin_validation_assistant_profile_is_valid() -> None:
     root = Path(__file__).resolve().parents[1]
     registry = ProjectProfileRegistry(root)
 
-    profile, instructions = registry.read_instructions("builtin:vintage-programmer")
+    profile, instructions = registry.read_instructions("builtin:validation-assistant")
 
-    assert profile["display_name"] == "Vintage Programmer"
+    assert profile["display_name"] == "Validation Assistant"
     assert "## Verification" in instructions

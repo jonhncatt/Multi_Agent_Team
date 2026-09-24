@@ -7,7 +7,7 @@ The probe uses three small requests:
 2. a short streaming completion used to measure chunk cadence and local CPU cost;
 3. a forced, side-effect-free function call.
 
-It does not enable streaming in the Vintage Programmer application. Reports contain
+It does not enable streaming in the Validation Assistant application. Reports contain
 only capability metadata, timings, character counts, dummy probe output, and errors
 with configured secrets redacted.
 """
@@ -267,7 +267,7 @@ def probe_non_stream(
             **_base_request(model, 32),
             messages=[
                 {"role": "system", "content": "Follow the probe instruction exactly."},
-                {"role": "user", "content": "Reply with exactly VP_OK and nothing else."},
+                {"role": "user", "content": "Reply with exactly VA_OK and nothing else."},
             ],
             timeout=timeout_sec,
         )
@@ -282,7 +282,7 @@ def probe_non_stream(
             "local_cpu_ms": _safe_round(cpu_ms),
             "local_cpu_percent_of_one_core": _safe_round(cpu_ms / max(1.0, elapsed_ms) * 100.0),
             "response_chars": len(text),
-            "exact_probe_reply": text == "VP_OK",
+            "exact_probe_reply": text == "VA_OK",
             "finish_reason": str(getattr(choices[0], "finish_reason", "") or "") if choices else "",
             "usage": _usage_payload(getattr(response, "usage", None)),
         }
@@ -457,7 +457,7 @@ def probe_tool_calling(
             messages=[
                 {
                     "role": "user",
-                    "content": "Call provider_probe exactly once with value set to VP_TOOL_OK. Do not answer in prose.",
+                    "content": "Call provider_probe exactly once with value set to VA_TOOL_OK. Do not answer in prose.",
                 }
             ],
             tools=[
@@ -500,7 +500,7 @@ def probe_tool_calling(
             tool_calls
             and observed_name == PROBE_TOOL_NAME
             and call_id_present
-            and parsed_arguments.get("value") == "VP_TOOL_OK"
+            and parsed_arguments.get("value") == "VA_TOOL_OK"
         )
         return {
             "ok": tool_contract_ok,
@@ -510,7 +510,7 @@ def probe_tool_calling(
             "tool_name_matches": observed_name == PROBE_TOOL_NAME,
             "tool_call_id_present": call_id_present,
             "arguments_are_json_object": bool(parsed_arguments),
-            "probe_argument_matches": parsed_arguments.get("value") == "VP_TOOL_OK",
+            "probe_argument_matches": parsed_arguments.get("value") == "VA_TOOL_OK",
             "assistant_text_chars": len(_content_from_message(message)),
             "finish_reason": str(getattr(choices[0], "finish_reason", "") or "") if choices else "",
             "usage": _usage_payload(getattr(response, "usage", None)),
@@ -558,7 +558,7 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Probe the configured Chat Completions provider and estimate streaming UI update pressure.",
     )
-    parser.add_argument("--provider", default="", help="Optional configured provider profile. Defaults to VP_LLM_PROVIDER.")
+    parser.add_argument("--provider", default="", help="Optional configured provider profile. Defaults to VA_LLM_PROVIDER.")
     parser.add_argument("--model", default="", help="Optional model override. Defaults to the active provider model.")
     parser.add_argument("--timeout-sec", type=float, default=45.0, help="Per-request timeout. Default: 45 seconds.")
     parser.add_argument("--stream-max-tokens", type=int, default=256, help="Small streaming probe output cap. Default: 256.")

@@ -1,7 +1,7 @@
 # Native Tool Metadata
 
 ## Purpose
-Vintage Programmer uses tool metadata to describe tool capability, implementation origin, permission requirements, and risk level.
+Validation Assistant uses tool metadata to describe tool capability, implementation origin, permission requirements, and risk level.
 
 这份 metadata 是当前原生工具的单一事实来源。它不改变工具名，也不直接改变工具实现，只用于补足 UI 展示、权限解释和保守型验证。
 

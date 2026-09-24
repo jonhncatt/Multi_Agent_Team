@@ -84,8 +84,8 @@ def validate_repository_skills(repository_root: Path) -> dict[str, Any]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Validate Vintage Programmer Built-in and Team Skills.")
-    parser.add_argument("--root", default=str(REPOSITORY_ROOT), help="Vintage Programmer repository root")
+    parser = argparse.ArgumentParser(description="Validate Validation Assistant Built-in and Team Skills.")
+    parser.add_argument("--root", default=str(REPOSITORY_ROOT), help="Validation Assistant repository root")
     parser.add_argument("--json", action="store_true", help="Print the full JSON report")
     args = parser.parse_args(argv)
 

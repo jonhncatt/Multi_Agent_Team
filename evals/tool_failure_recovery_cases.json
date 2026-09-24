@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "suite": "vintage_programmer_model_led_tool_continuation",
+  "suite": "validation_assistant_model_led_tool_continuation",
   "description": "Deterministic Runtime continuation evals. These cases use fake tools and never call a real model.",
   "cases": [
     {
@@ -14,7 +14,7 @@
     },
     {
       "name": "repeated_actions_remain_model_led",
-      "test_node": "tests/test_vintage_programmer_runtime.py::test_runtime_leaves_repeated_actions_to_the_model",
+      "test_node": "tests/test_validation_assistant_runtime.py::test_runtime_leaves_repeated_actions_to_the_model",
       "failure_category": "repeated_action",
       "expected_turn_status": "completed",
       "expected_continuation_policy": "model_led",
@@ -22,7 +22,7 @@
     },
     {
       "name": "no_progress_is_not_inferred",
-      "test_node": "tests/test_vintage_programmer_runtime.py::test_runtime_does_not_guess_whether_repeated_searches_make_progress",
+      "test_node": "tests/test_validation_assistant_runtime.py::test_runtime_does_not_guess_whether_repeated_searches_make_progress",
       "failure_category": "progress_observability",
       "expected_turn_status": "completed",
       "expected_continuation_policy": "model_led",
@@ -30,7 +30,7 @@
     },
     {
       "name": "repeated_tool_failures_remain_model_led",
-      "test_node": "tests/test_vintage_programmer_runtime.py::test_runtime_leaves_repeated_tool_failures_to_the_model",
+      "test_node": "tests/test_validation_assistant_runtime.py::test_runtime_leaves_repeated_tool_failures_to_the_model",
       "failure_category": "tool_call_failure",
       "expected_turn_status": "completed",
       "expected_continuation_policy": "model_led",
@@ -38,7 +38,7 @@
     },
     {
       "name": "environment_failures_remain_model_led",
-      "test_node": "tests/test_vintage_programmer_runtime.py::test_runtime_returns_environment_failures_to_the_model_without_stopping",
+      "test_node": "tests/test_validation_assistant_runtime.py::test_runtime_returns_environment_failures_to_the_model_without_stopping",
       "failure_category": "environment_blocked",
       "expected_turn_status": "completed",
       "expected_continuation_policy": "model_led",
@@ -46,7 +46,7 @@
     },
     {
       "name": "no_total_failure_budget",
-      "test_node": "tests/test_vintage_programmer_runtime.py::test_runtime_has_no_total_distinct_failure_budget",
+      "test_node": "tests/test_validation_assistant_runtime.py::test_runtime_has_no_total_distinct_failure_budget",
       "failure_category": "tool_call_failure",
       "expected_turn_status": "completed",
       "expected_continuation_policy": "model_led",
@@ -54,7 +54,7 @@
     },
     {
       "name": "policy_rejections_are_returned_to_model",
-      "test_node": "tests/test_vintage_programmer_runtime.py::test_runtime_returns_repeated_guard_rejections_to_the_model",
+      "test_node": "tests/test_validation_assistant_runtime.py::test_runtime_returns_repeated_guard_rejections_to_the_model",
       "failure_category": "policy_rejection",
       "expected_turn_status": "completed",
       "expected_continuation_policy": "model_led",
@@ -62,7 +62,7 @@
     },
     {
       "name": "search_failure_rejection_then_rg_continues_model_led",
-      "test_node": "tests/test_vintage_programmer_runtime.py::test_runtime_executes_all_calls_and_allows_new_strategy_after_failures",
+      "test_node": "tests/test_validation_assistant_runtime.py::test_runtime_executes_all_calls_and_allows_new_strategy_after_failures",
       "failure_category": "mixed_failed_rejected",
       "expected_turn_status": "completed",
       "expected_continuation_policy": "model_led",
@@ -73,7 +73,7 @@
     },
     {
       "name": "invalid_tool_call_uses_protocol_repair",
-      "test_node": "tests/test_vintage_programmer_runtime.py::test_runtime_keeps_requesting_protocol_repair_for_invalid_tool_calls",
+      "test_node": "tests/test_validation_assistant_runtime.py::test_runtime_keeps_requesting_protocol_repair_for_invalid_tool_calls",
       "failure_category": "protocol_repair",
       "expected_turn_status": "completed",
       "expected_continuation_policy": "model_led",
@@ -81,7 +81,7 @@
     },
     {
       "name": "verification_failure_can_be_recovered_by_model",
-      "test_node": "tests/test_vintage_programmer_runtime.py::test_runtime_allows_model_to_recover_when_verification_precedes_target_mutation",
+      "test_node": "tests/test_validation_assistant_runtime.py::test_runtime_allows_model_to_recover_when_verification_precedes_target_mutation",
       "failure_category": "verification_failure",
       "expected_turn_status": "completed",
       "expected_continuation_policy": "model_led",
@@ -89,7 +89,7 @@
     },
     {
       "name": "turn_changes_are_independent_from_tool_failure_history",
-      "test_node": "tests/test_vintage_programmer_runtime.py::test_turn_changes_keep_file_updates_separate_from_tool_failures_and_latest_verification",
+      "test_node": "tests/test_validation_assistant_runtime.py::test_turn_changes_keep_file_updates_separate_from_tool_failures_and_latest_verification",
       "failure_category": "turn_outcome_observability",
       "expected_turn_status": "failed",
       "expected_continuation_policy": "model_led",
@@ -97,7 +97,7 @@
     },
     {
       "name": "cancel_then_immediate_retry_is_isolated",
-      "test_node": "tests/integration/test_chat_vintage_programmer_api.py::test_cancelled_turn_reaches_terminal_state_before_same_thread_retry_starts",
+      "test_node": "tests/integration/test_chat_validation_assistant_api.py::test_cancelled_turn_reaches_terminal_state_before_same_thread_retry_starts",
       "failure_category": "turn_cancellation",
       "expected_turn_status": "completed",
       "expected_continuation_policy": "terminal_ack_then_new_turn",
@@ -105,7 +105,7 @@
     },
     {
       "name": "uncollected_subagent_finishes_through_background_mailbox",
-      "test_node": "tests/test_vintage_programmer_runtime.py::test_runtime_successful_parent_does_not_join_uncollected_subagent_and_publishes_late_result",
+      "test_node": "tests/test_validation_assistant_runtime.py::test_runtime_successful_parent_does_not_join_uncollected_subagent_and_publishes_late_result",
       "failure_category": "subagent_lifecycle",
       "expected_turn_status": "completed",
       "expected_continuation_policy": "background_mailbox",
@@ -122,7 +122,7 @@
     },
     {
       "name": "mid_turn_compaction_uses_token_threshold_only",
-      "test_node": "tests/test_vintage_programmer_runtime.py::test_mid_turn_compaction_runs_once_when_token_threshold_is_crossed",
+      "test_node": "tests/test_validation_assistant_runtime.py::test_mid_turn_compaction_runs_once_when_token_threshold_is_crossed",
       "failure_category": "context_management",
       "expected_turn_status": "completed",
       "expected_continuation_policy": "model_led",
@@ -130,7 +130,7 @@
     },
     {
       "name": "model_downgrade_recalculates_context_before_followup",
-      "test_node": "tests/test_vintage_programmer_runtime.py::test_model_downgrade_compacts_large_base_before_the_next_request",
+      "test_node": "tests/test_validation_assistant_runtime.py::test_model_downgrade_compacts_large_base_before_the_next_request",
       "failure_category": "context_management",
       "expected_turn_status": "completed",
       "expected_continuation_policy": "model_led",

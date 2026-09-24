@@ -6,9 +6,9 @@ enabled: true
 
 # Create Team Skill
 
-Use this built-in skill when the user wants Vintage Programmer to create or update a reusable Team Skill.
+Use this built-in skill when the user wants Validation Assistant to create or update a reusable Team Skill.
 
-Team Skills are shared through the Vintage Programmer Git repository. Their physical location is resolved by the Skill Registry and must never be derived from the active business project. Always use `save_skill`; do not create `SKILL.md` with ordinary file or shell tools.
+Team Skills are shared through the Validation Assistant Git repository. Their physical location is resolved by the Skill Registry and must never be derived from the active business project. Always use `save_skill`; do not create `SKILL.md` with ordinary file or shell tools.
 
 ## When To Create A Skill
 
@@ -28,7 +28,7 @@ Do not create a skill for a one-off answer, temporary project detail, secret, cr
 ## Script And Secret Contract
 
 - Resolve bundled files from the Skill itself, never from the active business project's current directory. In Python use `Path(__file__).resolve()`; use the equivalent script-location primitive in Shell, Node, or PowerShell.
-- Treat `VP_SKILL_ROOT` as the Skill package root and `VP_PROJECT_ROOT` / `VP_PROJECT_CWD` as the selected business project. Runtime injects these only when an enabled Skill script is executed directly.
+- Treat `VA_SKILL_ROOT` as the Skill package root and `VA_PROJECT_ROOT` / `VA_PROJECT_CWD` as the selected business project. Runtime injects these only when an enabled Skill script is executed directly.
 - Read credentials only from inherited environment variables such as `os.environ["REDMINE_API_KEY"]`. Never search for, open, parse, print, return, or log `.env` files or secret values.
 - Keep secret values out of `SKILL.md`, scripts, references, examples, command arguments, and Git. Document only the required environment-variable names.
 - If a required variable is missing, fail with the variable name and setup guidance, never with a guessed file path or the contents of the environment.

@@ -17,9 +17,9 @@ from app.local_tools import LocalToolExecutor
 
 
 def _make_manager(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> LocalToolExecutor:
-    monkeypatch.setenv("VP_SKIP_DOTENV", "1")
-    monkeypatch.setenv("VP_WORKSPACE_ROOT", str(tmp_path))
-    monkeypatch.setenv("VP_PERMISSION_PROFILE", "auto")
+    monkeypatch.setenv("VA_SKIP_DOTENV", "1")
+    monkeypatch.setenv("VA_WORKSPACE_ROOT", str(tmp_path))
+    monkeypatch.setenv("VA_PERMISSION_PROFILE", "auto")
     config = load_config()
     manager = LocalToolExecutor(config)
     manager.set_runtime_context(
@@ -163,16 +163,16 @@ def test_enabled_skill_script_gets_skill_project_roots_and_inherited_secret(
     tmp_path: Path,
 ) -> None:
     project_root = tmp_path / "business-project"
-    skill_root = tmp_path / "vintage-programmer" / "skills" / "team" / "ticket-reader"
+    skill_root = tmp_path / "validation-assistant" / "skills" / "team" / "ticket-reader"
     scripts_dir = skill_root / "scripts"
     project_root.mkdir()
     scripts_dir.mkdir(parents=True)
     script_path = scripts_dir / "show_context.py"
     script_path.write_text(
         "import os\n"
-        "print('skill=' + os.environ.get('VP_SKILL_ROOT', ''))\n"
-        "print('project=' + os.environ.get('VP_PROJECT_ROOT', ''))\n"
-        "print('cwd=' + os.environ.get('VP_PROJECT_CWD', ''))\n"
+        "print('skill=' + os.environ.get('VA_SKILL_ROOT', ''))\n"
+        "print('project=' + os.environ.get('VA_PROJECT_ROOT', ''))\n"
+        "print('cwd=' + os.environ.get('VA_PROJECT_CWD', ''))\n"
         "print('secret=' + os.environ.get('TEAM_SKILL_TEST_SECRET', ''))\n",
         encoding="utf-8",
     )
@@ -901,7 +901,7 @@ def test_full_access_supply_chain_flows_request_approval_when_explicitly_allowli
         "pwd,ls,dir,cat,rg,head,tail,wc,find,echo,printf,date,python,py,python3,"
         "git,npm,node,pytest,ruff,sed,awk,mkdir,touch,cp,mv,tee,true"
     )
-    monkeypatch.setenv("VP_ALLOWED_COMMANDS", ",".join([base_allowed, *extra_allowed]))
+    monkeypatch.setenv("VA_ALLOWED_COMMANDS", ",".join([base_allowed, *extra_allowed]))
     manager = _make_manager(monkeypatch, tmp_path)
     manager.set_runtime_context(
         project_root=str(tmp_path),

@@ -20,12 +20,12 @@ def symlink_or_skip(link, target, *, directory=False):
         pytest.skip(f"Symlink capability unavailable: {exc}")
 
 
-def search(service, root, query="vprb", **kwargs):
+def search(service, root, query="varb", **kwargs):
     return service.search(root, query, kwargs.pop("limit", 20), refresh=kwargs.pop("refresh", False),
                           cancelled=kwargs.pop("cancelled", lambda: False), **kwargs)
 
 
-def completed(service, root, query="vprb", **kwargs):
+def completed(service, root, query="varb", **kwargs):
     result = search(service, root, query, **kwargs)
     deadline = time.monotonic() + 3
     while result["stop_reason"] == "walking" and time.monotonic() < deadline:
@@ -35,8 +35,8 @@ def completed(service, root, query="vprb", **kwargs):
 
 
 @pytest.mark.parametrize("query,path", [
-    ("vprb", "app/vp_runtime_backend.py"), ("runtime backend", "app/vp_runtime_backend.py"),
-    ("backend runtime", "app/vp_runtime_backend.py"), ("ncm", "src/nvme_controller_manager.cpp"),
+    ("varb", "app/va_runtime_backend.py"), ("runtime backend", "app/va_runtime_backend.py"),
+    ("backend runtime", "app/va_runtime_backend.py"), ("ncm", "src/nvme_controller_manager.cpp"),
     ("nvme ctrl", "src/nvme_controller.cpp"), ("İ", "src/İ.py"),
 ])
 def test_fuzzy_subsequences_and_tokens(query, path):
@@ -44,17 +44,17 @@ def test_fuzzy_subsequences_and_tokens(query, path):
 
 
 def test_fuzzy_ranking_rewards_basename_boundaries_and_adjacency():
-    assert fuzzy_score("vprb", "app/vp_runtime_backend.py") > fuzzy_score("vprb", "app/very_poor_random_blah.py")
+    assert fuzzy_score("varb", "app/va_runtime_backend.py") > fuzzy_score("varb", "app/very_awkward_random_blah.py")
     assert fuzzy_score("runtime", "app/runtime.py") > fuzzy_score("runtime", "runtime/app/other.py")
     assert fuzzy_score("xyz", "app/runtime.py") is None
 
 
 def test_corpus_reused_refreshed_and_isolated_by_root(tmp_path, monkeypatch):
     service = FilenameSearch()
-    (tmp_path / "vp_runtime_backend.py").touch()
+    (tmp_path / "va_runtime_backend.py").touch()
     first = completed(service, tmp_path)
-    assert first["walk_complete"] and first["matches"][0]["path"] == "vp_runtime_backend.py"
-    (tmp_path / "vp_runtime_backend_new.py").touch()
+    assert first["walk_complete"] and first["matches"][0]["path"] == "va_runtime_backend.py"
+    (tmp_path / "va_runtime_backend_new.py").touch()
     original = filename_search._walk
     def forbidden(*args):
         raise AssertionError("warm query must not scan")
@@ -109,11 +109,11 @@ def test_progressive_walk_can_be_searched_before_finishing(tmp_path, monkeypatch
     release = threading.Event()
     def slow_walk(corpus):
         with corpus.changed:
-            corpus.paths.append("vp_runtime_backend.py")
+            corpus.paths.append("va_runtime_backend.py")
             corpus.changed.notify_all()
         release.wait(3)
         with corpus.changed:
-            corpus.paths.append("vp_runtime_backend_new.py")
+            corpus.paths.append("va_runtime_backend_new.py")
             corpus.complete = corpus.finished = True
             corpus.changed.notify_all()
     monkeypatch.setattr(filename_search, "_walk", slow_walk)
@@ -135,7 +135,7 @@ def test_concurrent_queries_share_one_walk(tmp_path, monkeypatch):
         walks.append(corpus.root)
         original(corpus)
     monkeypatch.setattr(filename_search, "_walk", tracked)
-    (tmp_path / "vp_runtime_backend.py").touch()
+    (tmp_path / "va_runtime_backend.py").touch()
     service = FilenameSearch()
     with ThreadPoolExecutor(max_workers=4) as pool:
         list(pool.map(lambda _: search(service, tmp_path), range(12)))
@@ -198,7 +198,7 @@ def test_ignore_fifo_is_not_opened(tmp_path):
     if not hasattr(os, "mkfifo"):
         pytest.skip("named pipes unavailable")
     os.mkfifo(tmp_path / ".ignore")
-    (tmp_path / "vp_runtime_backend.py").touch()
+    (tmp_path / "va_runtime_backend.py").touch()
     result = completed(FilenameSearch(), tmp_path)
     assert result["walk_complete"] and result["match_count"] == 1
 
@@ -206,21 +206,21 @@ def test_ignore_fifo_is_not_opened(tmp_path):
 def test_cached_path_is_revalidated_after_symlink_replacement(tmp_path):
     executor = LocalToolExecutor(_config(tmp_path))
     executor.set_runtime_context(project_root=str(tmp_path), cwd=str(tmp_path))
-    target = tmp_path / "vp_runtime_backend.py"
+    target = tmp_path / "va_runtime_backend.py"
     target.touch()
-    assert executor.search_files("vprb")["matches"]
+    assert executor.search_files("varb")["matches"]
     target.unlink()
     symlink_or_skip(target, tmp_path.parent / "outside.py")
-    result = executor.search_files("vprb")
+    result = executor.search_files("varb")
     assert not result["ok"]
 
 
 def test_cached_results_pass_permission_resolver_without_symlink_privilege(tmp_path, monkeypatch):
     executor = LocalToolExecutor(_config(tmp_path))
     executor.set_runtime_context(project_root=str(tmp_path), cwd=str(tmp_path))
-    target = tmp_path / "vp_runtime_backend.py"
+    target = tmp_path / "va_runtime_backend.py"
     target.touch()
-    assert executor.search_files("vprb")["matches"]
+    assert executor.search_files("varb")["matches"]
     original = executor._resolve_path
     checked = []
     def revoked(path):
@@ -229,7 +229,7 @@ def test_cached_results_pass_permission_resolver_without_symlink_privilege(tmp_p
             raise PermissionError("permission revoked")
         return original(path)
     monkeypatch.setattr(executor, "_resolve_path", revoked)
-    assert not executor.search_files("vprb")["ok"]
+    assert not executor.search_files("varb")["ok"]
     assert str(target) in checked
 
 
@@ -318,17 +318,17 @@ def test_public_surface_and_root_permission_checks(tmp_path):
 
     executor = LocalToolExecutor(_config(tmp_path))
     executor.set_runtime_context(project_root=str(tmp_path), cwd=str(tmp_path))
-    (tmp_path / "vp_runtime_backend.py").touch()
-    result = executor.execute("search_files", {"query": "vprb"})
-    assert result["ok"] and result["matches"][0]["path"] == "vp_runtime_backend.py"
+    (tmp_path / "va_runtime_backend.py").touch()
+    result = executor.execute("search_files", {"query": "varb"})
+    assert result["ok"] and result["matches"][0]["path"] == "va_runtime_backend.py"
     assert result["root_ref"] == "project_root"
-    assert not executor.search_files("vprb", root=str(tmp_path.parent))["ok"]
+    assert not executor.search_files("varb", root=str(tmp_path.parent))["ok"]
     assert not executor.search_files("")["ok"]
     assert not executor.search_files("x" * 257)["ok"]
     validator = ActionValidator(
         tool_specs=executor.tool_specs, allowed_tools=["search_files"], allowed_commands=[],
         boundary=RuntimeBoundary(allowed_roots=[str(tmp_path)], writable_roots=[],
                                  cwd=str(tmp_path), project_root=str(tmp_path)), locale="en")
-    assert validator.validate_tool_call({"name": "search_files", "args": {"query": "vprb"}}).allowed
+    assert validator.validate_tool_call({"name": "search_files", "args": {"query": "varb"}}).allowed
     assert not validator.validate_tool_call({"name": "search_files", "args": {
-        "query": "vprb", "root": str(tmp_path.parent)}}).allowed
+        "query": "varb", "root": str(tmp_path.parent)}}).allowed

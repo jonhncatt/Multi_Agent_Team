@@ -36,20 +36,20 @@ def _png_size(path: Path) -> tuple[int, int]:
     return struct.unpack(">II", payload[16:24])
 
 
-def test_windows_build_embeds_multisize_vp_icon_without_webview2() -> None:
+def test_windows_build_embeds_multisize_va_icon_without_webview2() -> None:
     asset_dir = REPO_ROOT / "desktop" / "windows" / "assets"
-    icon = (asset_dir / "vintage_programmer.ico").read_bytes()
-    shell_icon = (asset_dir / "vintage_programmer_shell.ico").read_bytes()
-    png = (asset_dir / "vintage_programmer.png").read_bytes()
-    master = (asset_dir / "vintage_programmer_master.png").read_bytes()
+    icon = (asset_dir / "validation_assistant.ico").read_bytes()
+    shell_icon = (asset_dir / "validation_assistant_shell.ico").read_bytes()
+    png = (asset_dir / "validation_assistant.png").read_bytes()
+    master = (asset_dir / "validation_assistant_master.png").read_bytes()
     web_png = (
-        REPO_ROOT / "app" / "static" / "assets" / "vintage_programmer.png"
+        REPO_ROOT / "app" / "static" / "assets" / "validation_assistant.png"
     ).read_bytes()
     web_icon = (
-        REPO_ROOT / "app" / "static" / "assets" / "vintage_programmer.ico"
+        REPO_ROOT / "app" / "static" / "assets" / "validation_assistant.ico"
     ).read_bytes()
     web_small_icons = [
-        REPO_ROOT / "app" / "static" / "assets" / f"vintage_programmer_{size}.png"
+        REPO_ROOT / "app" / "static" / "assets" / f"validation_assistant_{size}.png"
         for size in (16, 32, 48, 64)
     ]
     build_script = (REPO_ROOT / "desktop" / "windows" / "build.ps1").read_text(
@@ -74,10 +74,10 @@ def test_windows_build_embeds_multisize_vp_icon_without_webview2() -> None:
     assert int.from_bytes(icon[4:6], "little") == 9
     assert shell_icon[:4] == b"\x00\x00\x01\x00"
     assert int.from_bytes(shell_icon[4:6], "little") == 9
-    assert "--icon desktop\\windows\\assets\\vintage_programmer_shell.ico" in build_script
-    assert "--icon desktop/windows/assets/vintage_programmer_shell.ico" in workflow
-    assert "verify_executable_icon.py dist\\VintageProgrammer.exe" in build_script
-    assert "verify_executable_icon.py dist/VintageProgrammer.exe" in workflow
+    assert "--icon desktop\\windows\\assets\\validation_assistant_shell.ico" in build_script
+    assert "--icon desktop/windows/assets/validation_assistant_shell.ico" in workflow
+    assert "verify_executable_icon.py dist\\ValidationAssistant.exe" in build_script
+    assert "verify_executable_icon.py dist/ValidationAssistant.exe" in workflow
     assert "Start-Process" in workflow
     assert "-Wait" in workflow
     assert "if ($launcher.ExitCode -ne 0)" in workflow
@@ -88,7 +88,7 @@ def test_windows_build_embeds_multisize_vp_icon_without_webview2() -> None:
 def test_windows_icon_contains_native_frames_for_small_taskbar_sizes() -> None:
     asset_dir = REPO_ROOT / "desktop" / "windows" / "assets"
     web_asset_dir = REPO_ROOT / "app" / "static" / "assets"
-    icon_payload = (asset_dir / "vintage_programmer.ico").read_bytes()
+    icon_payload = (asset_dir / "validation_assistant.ico").read_bytes()
 
     assert set(_ico_frames(icon_payload)) == {
         (16, 16),
@@ -103,13 +103,13 @@ def test_windows_icon_contains_native_frames_for_small_taskbar_sizes() -> None:
     }
     for size in (16, 32, 48, 64):
         assert _png_size(
-            web_asset_dir / f"vintage_programmer_{size}.png"
+            web_asset_dir / f"validation_assistant_{size}.png"
         ) == (size, size)
 
 
 def test_windows_shell_icon_uses_legacy_dib_frames_for_explorer_compatibility() -> None:
     shell_icon = (
-        REPO_ROOT / "desktop" / "windows" / "assets" / "vintage_programmer_shell.ico"
+        REPO_ROOT / "desktop" / "windows" / "assets" / "validation_assistant_shell.ico"
     ).read_bytes()
 
     assert _ico_frames(shell_icon) == {

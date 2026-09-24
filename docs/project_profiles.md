@@ -1,6 +1,6 @@
 # Project Profiles：显式绑定的共享项目说明
 
-Project Profile 是 Vintage Programmer 仓库中受 Git 管理的项目说明。它独立于主 Agent、Subagent 和 Skill；同一项目的主 Agent与 Subagent 使用同一个显式绑定结果。
+Project Profile 是 Validation Assistant 仓库中受 Git 管理的项目说明。它独立于主 Agent、Subagent 和 Skill；同一项目的主 Agent与 Subagent 使用同一个显式绑定结果。
 
 ## 目录
 
@@ -15,7 +15,7 @@ project_profiles/
 ```
 
 - Built-in 由产品维护。
-- Team 由公司团队维护并通过 Vintage Programmer Git 仓库分发。
+- Team 由公司团队维护并通过 Validation Assistant Git 仓库分发。
 - `profile.json` 提供稳定 key、显示名和简短说明。
 - `AGENTS.md` 是绑定后进入模型上下文的完整项目说明。
 
@@ -29,7 +29,7 @@ Project Profile 不保存个人绝对路径、凭证、Session、审批或运行
 2. 用户可以选择一个共享 Profile，也可以选择“无项目说明”。
 3. 跳过后，右键项目可随时绑定、更换或解除。
 4. 本机 `app/data/projects.json` 只保存 canonical `profile_key`，例如 `team:pcbasher`。
-5. 未绑定项目不产生 `[project_instructions]` 消息，也不会回退读取 Vintage Programmer 根目录或实际业务仓库中的 `AGENTS.md`。
+5. 未绑定项目不产生 `[project_instructions]` 消息，也不会回退读取 Validation Assistant 根目录或实际业务仓库中的 `AGENTS.md`。
 
 `git pull` 更新 Profile 内容后，已有的本机绑定继续指向同一个 canonical key；新模型请求读取更新后的 `AGENTS.md`。
 

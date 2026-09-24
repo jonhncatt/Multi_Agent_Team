@@ -15,13 +15,13 @@ from app.workbench import WorkbenchStore  # noqa: E402
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Migrate legacy VP system/workspace Skills into the global Team catalog.")
+    parser = argparse.ArgumentParser(description="Migrate legacy VA system/workspace Skills into the global Team catalog.")
     parser.add_argument("--json", action="store_true", help="Print the complete path-redacted migration report")
     args = parser.parse_args(argv)
 
     store = WorkbenchStore(
         config=load_config(),
-        agent_dir=REPOSITORY_ROOT / "agents" / "vintage_programmer",
+        agent_dir=REPOSITORY_ROOT / "agents" / "validation_assistant",
     )
     report = store.skill_migration_report
     if args.json:

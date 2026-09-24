@@ -12,7 +12,7 @@ app/data/runs/<thread_id>/<legacy_run_id>.json   # 仅旧记录兼容
 
 - Thread transcript 保存真实的 user / assistant / tool 消息事务。
 - Turn Trace 保存模型上下文快照、校验、耗时、错误和恢复。
-- 新执行自动写 Turn Trace，不需要启用 `AGENT_OS_TRACE`、`VP_TRACE` 或 shadow logging。
+- 新执行自动写 Turn Trace，不需要启用 `AGENT_OS_TRACE`、`VA_TRACE` 或 shadow logging。
 
 ## UI 中如何查看
 

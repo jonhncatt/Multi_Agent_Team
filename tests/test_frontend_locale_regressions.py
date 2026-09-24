@@ -398,7 +398,7 @@ def test_index_cache_busts_frontend_static_bundle_with_app_version() -> None:
     app_version = version_match.group(1)
     index = INDEX_HTML_PATH.read_text(encoding="utf-8")
 
-    assert app_version == "3.1.7"
+    assert app_version == "1.0.0"
     assert f'/static/app.js?v={app_version}' in index
     assert f'/static/locales.js?v={app_version}' in index
     assert f'/static/styles.css?v={app_version}' in index
@@ -409,18 +409,18 @@ def test_index_renders_static_boot_loading_fallback() -> None:
     index = INDEX_HTML_PATH.read_text(encoding="utf-8")
     styles = STYLES_CSS_PATH.read_text(encoding="utf-8")
 
-    assert '<div id="root" data-app="vintage-programmer">' in index
+    assert '<div id="root" data-app="validation-assistant">' in index
     assert 'class="app-boot-screen"' in index
     assert 'role="status"' in index
     assert "Loading workspace..." in index
-    assert 'src="/static/assets/vintage_programmer.png"' in index
-    assert 'href="/static/assets/vintage_programmer.ico?v=3"' in index
+    assert 'src="/static/assets/validation_assistant.png"' in index
+    assert 'href="/static/assets/validation_assistant.ico?v=3"' in index
     for size in (16, 32, 48, 64):
         assert (
             f'sizes="{size}x{size}" '
-            f'href="/static/assets/vintage_programmer_{size}.png?v=3"'
+            f'href="/static/assets/validation_assistant_{size}.png?v=3"'
         ) in index
-    assert 'window.__VP_DESKTOP_CONTROL_TOKEN__' in index
+    assert 'window.__VA_DESKTOP_CONTROL_TOKEN__' in index
     for token in (
         ".app-boot-screen",
         ".app-boot-card",
@@ -450,13 +450,13 @@ def test_desktop_shell_uses_isolated_configurable_ui_density() -> None:
     index = INDEX_HTML_PATH.read_text(encoding="utf-8")
     styles = STYLES_CSS_PATH.read_text(encoding="utf-8")
 
-    assert 'params.get("vp_desktop") !== "1"' in index
-    assert 'params.get("vp_scale") || "0.8"' in index
-    assert 'document.documentElement.dataset.vpDesktopShell = "true"' in index
-    assert '--vp-desktop-viewport-height' in index
-    assert 'html[data-vp-desktop-shell="true"] {' in styles
-    assert 'zoom: var(--vp-desktop-ui-scale, 0.8);' in styles
-    assert 'html[data-vp-desktop-shell="true"] .workspace-main' in styles
+    assert 'params.get("va_desktop") !== "1"' in index
+    assert 'params.get("va_scale") || "0.8"' in index
+    assert 'document.documentElement.dataset.vaDesktopShell = "true"' in index
+    assert '--va-desktop-viewport-height' in index
+    assert 'html[data-va-desktop-shell="true"] {' in styles
+    assert 'zoom: var(--va-desktop-ui-scale, 0.8);' in styles
+    assert 'html[data-va-desktop-shell="true"] .workspace-main' in styles
 
 
 def test_chrome_desktop_exit_always_requires_confirmation() -> None:
@@ -467,8 +467,8 @@ def test_chrome_desktop_exit_always_requires_confirmation() -> None:
     assert ': t("desktop.exit.confirm_idle");' in script
     assert "if (!window.confirm(confirmation)) return;" in script
     assert 'activeCount > 0 && !window.confirm' not in script
-    assert '"desktop.exit.confirm_idle": "确定退出 Vintage Programmer 吗？本地后台也会同时关闭。"' in locales
-    assert '"desktop.exit.confirm_idle": "Exit Vintage Programmer? The local backend will also stop."' in locales
+    assert '"desktop.exit.confirm_idle": "确定退出 Validation Assistant 吗？本地后台也会同时关闭。"' in locales
+    assert '"desktop.exit.confirm_idle": "Exit Validation Assistant? The local backend will also stop."' in locales
 
 
 def test_react_boot_overlay_waits_for_workspace_and_thread_but_not_runtime_status() -> None:
@@ -1509,8 +1509,8 @@ def test_reasoning_effort_slider_is_wired_into_the_composer_and_locked_by_model(
     assert "Select a GPT-5.6 or GPT-6 Astra model to unlock reasoning effort." in script
     assert "disabled=${!reasoningEffortSupported}" in script
     assert "reasoning_effort: nextValue" in script
-    assert 'const REASONING_EFFORT_STORAGE_KEY = "vintage_programmer.reasoning_effort";' in script
-    assert 'const REASONING_MODEL_STORAGE_KEY = "vintage_programmer.reasoning_model";' in script
+    assert 'const REASONING_EFFORT_STORAGE_KEY = "validation_assistant.reasoning_effort";' in script
+    assert 'const REASONING_MODEL_STORAGE_KEY = "validation_assistant.reasoning_model";' in script
     assert 'const DEFAULT_REASONING_MODEL = "gpt-5.6-sol";' in script
     assert "window.localStorage.setItem(REASONING_EFFORT_STORAGE_KEY, effort)" in script
     assert "window.localStorage.setItem(REASONING_MODEL_STORAGE_KEY, model)" in script
@@ -1559,7 +1559,7 @@ def test_settings_theme_color_selector_drives_accent_variables() -> None:
     locales = LOCALES_JS_PATH.read_text(encoding="utf-8")
 
     required_script_tokens = (
-        'const THEME_COLOR_STORAGE_KEY = "vintage_programmer.theme_color";',
+        'const THEME_COLOR_STORAGE_KEY = "validation_assistant.theme_color";',
         "const THEME_COLOR_OPTIONS = [",
         '{ id: "amber", accent: "#f37021", accentInk: "#ffffff", accentSoft: "#ffede2", accentStrong: "#df5f10", accentDark: "#b94708" }',
         "function readStoredThemeColor() {",
@@ -1598,7 +1598,7 @@ def test_settings_theme_color_selector_drives_accent_variables() -> None:
 def test_internal_design_manual_describes_current_thread_runtime() -> None:
     manual = INTERNAL_MANUAL_PATH.read_text(encoding="utf-8")
 
-    assert manual.startswith("# Vintage Programmer 内部设计手册")
+    assert manual.startswith("# Validation Assistant 内部设计手册")
     assert "`thread_transcript.items` 是可继续对话的唯一历史事实源" in manual
     assert "System Message 只有一个" in manual
     assert "Trace 不是第二份聊天历史" in manual
@@ -1607,8 +1607,8 @@ def test_internal_design_manual_describes_current_thread_runtime() -> None:
     assert "skills/team/<name>/SKILL.md" in manual
     assert "旧 Harness 六要素" in manual
     assert "workspace/skills/<name>/SKILL.md" not in manual
-    assert "agents/vintage_programmer/skills/<skill>/SKILL.md" not in manual
-    assert "VP_ALLOW_ANY_PATH" in manual
+    assert "agents/validation_assistant/skills/<skill>/SKILL.md" not in manual
+    assert "VA_ALLOW_ANY_PATH" in manual
 
 
 def test_failed_tool_summary_defaults_are_wired_into_frontend() -> None:
@@ -2930,16 +2930,16 @@ def test_update_button_checks_hourly_but_only_updates_on_click() -> None:
     assert "if (data && data.ok && IS_CHROME_DESKTOP_APP) {" in script
     assert 'id="appRestartPromptModal"' in script
     assert 'fetchJson("/api/desktop/restart"' in script
-    assert '"X-VP-Desktop-Token": DESKTOP_CONTROL_TOKEN' in script
+    assert '"X-VA-Desktop-Token": DESKTOP_CONTROL_TOKEN' in script
     assert "nextProcessId !== previousProcessId" in script
     assert "window.location.reload();" in script
     assert 'className="app-boot-screen app-boot-screen-overlay app-restart-screen"' in script
     assert 'aria-label=${t("update.restarting_message")}' in script
     assert "onClick=${closeAppRestartPrompt}" in script
     assert "onClick=${handleAppRestart}" in script
-    assert '"update.restart_required_title": "需要重启 VP"' in locales
-    assert '"update.restart_now": "立即重启 VP"' in locales
-    assert '"update.restarting_message": "VP 正在重启。新后台准备好后，页面会自动刷新。"' in locales
+    assert '"update.restart_required_title": "需要重启 VA"' in locales
+    assert '"update.restart_now": "立即重启 VA"' in locales
+    assert '"update.restarting_message": "VA 正在重启。新后台准备好后，页面会自动刷新。"' in locales
     assert ".app-restart-modal" in styles
     assert ".app-restart-message" in styles
 
@@ -2966,7 +2966,7 @@ def test_project_sidebar_height_is_resizable_and_persisted() -> None:
     locales = LOCALES_JS_PATH.read_text(encoding="utf-8")
     styles = STYLES_CSS_PATH.read_text(encoding="utf-8")
 
-    assert 'const PROJECT_LIST_HEIGHT_STORAGE_KEY = "vintage_programmer.project_list_height";' in script
+    assert 'const PROJECT_LIST_HEIGHT_STORAGE_KEY = "validation_assistant.project_list_height";' in script
     assert "useState(readStoredProjectListHeight)" in script
     assert "onPointerDown=${startProjectListResize}" in script
     assert "onKeyDown=${handleProjectListResizeKeyDown}" in script

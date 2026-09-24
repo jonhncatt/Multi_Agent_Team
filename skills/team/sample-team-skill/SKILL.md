@@ -1,12 +1,12 @@
 ---
 name: sample-team-skill
-description: Use when you need a repository-shared example for authoring a Vintage Programmer Team Skill.
+description: Use when you need a repository-shared example for authoring a Validation Assistant Team Skill.
 enabled: false
 ---
 
 # Sample Team Skill
 
-This disabled example shows the strict format for a Team Skill shared through the Vintage Programmer repository.
+This disabled example shows the strict format for a Team Skill shared through the Validation Assistant repository.
 
 ## Workflow
 

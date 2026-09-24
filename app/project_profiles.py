@@ -21,7 +21,7 @@ class ProjectProfileError(ValueError):
 
 
 class ProjectProfileRegistry:
-    """Version-controlled project guidance shared by every VP Agent."""
+    """Version-controlled project guidance shared by every VA Agent."""
 
     def __init__(
         self,

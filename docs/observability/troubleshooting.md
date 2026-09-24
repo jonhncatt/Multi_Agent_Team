@@ -34,11 +34,11 @@ Windows：
 检查：
 
 - Settings 中选中的 provider 和 model；
-- VP 安装目录 `.env` 中的认证变量是否存在；
+- VA 安装目录 `.env` 中的认证变量是否存在；
 - 自定义 Base URL 和 CA 路径是否由启动进程读取；
 - `/api/runtime-status` 的 provider/auth 摘要。
 
-不要让 Agent 读取或搜索 `.env`。修改环境后重启 VP。
+不要让 Agent 读取或搜索 `.env`。修改环境后重启 VA。
 
 ### Agent 说路径不可访问
 

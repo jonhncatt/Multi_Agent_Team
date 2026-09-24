@@ -63,7 +63,7 @@ class Profiler:
                     stack.enter_context(patch.object(owner, name, self.timed(key, getattr(owner, name))))
             original_loads = code.json.loads
             def loads(*args, **kwargs):
-                if threading.current_thread().name == "vp-code-search-output":
+                if threading.current_thread().name == "va-code-search-output":
                     return self.timed("json_parse_ms", original_loads)(*args, **kwargs)
                 return original_loads(*args, **kwargs)
             stack.enter_context(patch.object(code.json, "loads", loads))

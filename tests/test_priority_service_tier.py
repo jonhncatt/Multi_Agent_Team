@@ -10,12 +10,12 @@ from langchain_openai import ChatOpenAI
 from pydantic import ValidationError
 
 from app.models import ChatSettings
-from app.vintage_programmer_runtime import VintageProgrammerRuntime
-from app.vp_runtime_backend import VPRuntimeBackend
+from app.validation_assistant_runtime import ValidationAssistantRuntime
+from app.va_runtime_backend import VARuntimeBackend
 
 
-def _backend(client: httpx.Client) -> VPRuntimeBackend:
-    backend = object.__new__(VPRuntimeBackend)
+def _backend(client: httpx.Client) -> VARuntimeBackend:
+    backend = object.__new__(VARuntimeBackend)
     backend.config = SimpleNamespace(
         openai_use_responses_api=False,
         openai_temperature=None,
@@ -87,7 +87,7 @@ def test_chat_completions_sends_priority_and_preserves_provider_downgrade() -> N
 
 @pytest.mark.parametrize("tier", ["default", "priority"])
 def test_api_mode_fallback_preserves_service_tier(tier: str) -> None:
-    backend = object.__new__(VPRuntimeBackend)
+    backend = object.__new__(VARuntimeBackend)
     backend.config = SimpleNamespace(openai_use_responses_api=True)
     built: list[dict[str, Any]] = []
 
@@ -112,7 +112,7 @@ def test_api_mode_fallback_preserves_service_tier(tier: str) -> None:
 
 
 def test_runner_recovery_and_model_failover_preserve_priority() -> None:
-    backend = object.__new__(VPRuntimeBackend)
+    backend = object.__new__(VARuntimeBackend)
     backend._build_model_candidates = lambda model: [model, "backup-model"]
     backend._model_cooldown_left = lambda model: 0
     backend._mark_model_success = lambda model: None
@@ -141,9 +141,9 @@ def test_runner_recovery_and_model_failover_preserve_priority() -> None:
 
 
 def test_runtime_adapter_forwards_service_tier_when_explicitly_supported() -> None:
-    assert VintageProgrammerRuntime._invoke_backend_method(
+    assert ValidationAssistantRuntime._invoke_backend_method(
         lambda *, service_tier: service_tier, service_tier="priority",
     ) == "priority"
-    assert VintageProgrammerRuntime._invoke_backend_method(
+    assert ValidationAssistantRuntime._invoke_backend_method(
         lambda model: model, model="legacy", service_tier="priority",
     ) == "legacy"

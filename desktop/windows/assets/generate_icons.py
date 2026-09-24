@@ -7,8 +7,8 @@ from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageOps
 
 
 CANVAS_SIZE = 1024
-MASTER_FILENAME = "vintage_programmer_master.png"
-SHELL_ICON_FILENAME = "vintage_programmer_shell.ico"
+MASTER_FILENAME = "validation_assistant_master.png"
+SHELL_ICON_FILENAME = "validation_assistant_shell.ico"
 ICON_PIXEL_SIZES = (16, 20, 24, 32, 40, 48, 64, 128, 256)
 ICON_SIZES = tuple((size, size) for size in ICON_PIXEL_SIZES)
 WEB_ICON_SIZES = (16, 32, 48, 64)
@@ -43,6 +43,11 @@ def _remove_connected_light_background(source: Image.Image) -> Image.Image:
     # Pull the mask inward by two source pixels to remove the original white
     # matte, then retain a soft antialiased edge on transparent backgrounds.
     alpha = alpha.filter(ImageFilter.MinFilter(5)).filter(ImageFilter.GaussianBlur(0.7))
+    # Preserve transparency supplied by generated or hand-authored source
+    # artwork. Replacing it outright turns nearly-transparent edge pixels into
+    # an opaque rectangular canvas.
+    alpha = ImageChops.multiply(image.getchannel("A"), alpha)
+    alpha = alpha.point(lambda value: 0 if value < 8 else value)
     image.putalpha(alpha)
     return image
 
@@ -65,7 +70,7 @@ def load_master(asset_dir: Path) -> Image.Image:
 
 
 def build_taskbar_master(master: Image.Image) -> Image.Image:
-    """Flatten soft artwork so the VP mark stays legible at taskbar sizes."""
+    """Flatten soft artwork so the VA mark stays legible at taskbar sizes."""
 
     # The source artwork intentionally has gradients, glow, and a soft shadow.
     # Those details look good at large sizes but turn into a fuzzy fringe when
@@ -110,13 +115,13 @@ def render_icon_frame(
 
 def write_derived_icons(master: Image.Image, asset_dir: Path) -> None:
     png = master.resize((512, 512), Image.Resampling.LANCZOS)
-    png.save(asset_dir / "vintage_programmer.png", optimize=True)
+    png.save(asset_dir / "validation_assistant.png", optimize=True)
     taskbar_master = build_taskbar_master(master)
     icon_frames = [
         render_icon_frame(master, size, taskbar_master=taskbar_master)
         for size in ICON_PIXEL_SIZES
     ]
-    icon_path = asset_dir / "vintage_programmer.ico"
+    icon_path = asset_dir / "validation_assistant.ico"
     icon_frames[-1].save(
         icon_path,
         format="ICO",
@@ -137,17 +142,17 @@ def write_derived_icons(master: Image.Image, asset_dir: Path) -> None:
 
     web_asset_dir = asset_dir.parents[2] / "app" / "static" / "assets"
     web_asset_dir.mkdir(parents=True, exist_ok=True)
-    png.save(web_asset_dir / "vintage_programmer.png", optimize=True)
+    png.save(web_asset_dir / "validation_assistant.png", optimize=True)
     for size in WEB_ICON_SIZES:
         render_icon_frame(master, size, taskbar_master=taskbar_master).save(
-            web_asset_dir / f"vintage_programmer_{size}.png",
+            web_asset_dir / f"validation_assistant_{size}.png",
             optimize=True,
         )
-    (web_asset_dir / "vintage_programmer.ico").write_bytes(icon_path.read_bytes())
+    (web_asset_dir / "validation_assistant.ico").write_bytes(icon_path.read_bytes())
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Generate consistent VP desktop and web icons.")
+    parser = argparse.ArgumentParser(description="Generate consistent VA desktop and web icons.")
     parser.add_argument("--source", type=Path, help="Import a new source image as the canonical icon")
     args = parser.parse_args()
 

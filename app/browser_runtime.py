@@ -94,7 +94,7 @@ class BrowserToolManager:
             self._worker_ready.clear()
             worker = threading.Thread(
                 target=self._worker_main,
-                name="vp-browser-tool-worker",
+                name="va-browser-tool-worker",
                 daemon=True,
             )
             self._worker_thread = worker

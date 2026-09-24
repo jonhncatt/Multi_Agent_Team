@@ -12,11 +12,11 @@ from app.provider_model_catalog import (
 
 
 def _config(monkeypatch, tmp_path: Path):
-    monkeypatch.setenv("VP_SKIP_DOTENV", "1")
-    monkeypatch.setenv("VP_WORKSPACE_ROOT", str(tmp_path))
-    monkeypatch.setenv("VP_LLM_PROVIDER", "openai_compatible")
-    monkeypatch.setenv("VP_OPENAI_COMPAT_API_KEY", "not-persisted-key")
-    monkeypatch.setenv("VP_OPENAI_COMPAT_BASE_URL", "https://gateway.example.test/v1")
+    monkeypatch.setenv("VA_SKIP_DOTENV", "1")
+    monkeypatch.setenv("VA_WORKSPACE_ROOT", str(tmp_path))
+    monkeypatch.setenv("VA_LLM_PROVIDER", "openai_compatible")
+    monkeypatch.setenv("VA_OPENAI_COMPAT_API_KEY", "not-persisted-key")
+    monkeypatch.setenv("VA_OPENAI_COMPAT_BASE_URL", "https://gateway.example.test/v1")
     return load_config()
 
 

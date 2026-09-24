@@ -25,7 +25,7 @@ from app.thread_transcript import normalize_thread_transcript, transcript_items_
 _MODEL_CONTEXT_WINDOWS: dict[str, int] = {
     # Operational windows intentionally follow Codex defaults. The API model
     # maximum is tracked separately and can be enabled explicitly by a
-    # deployment with VP_CONTEXT_WINDOW_TOKENS.
+    # deployment with VA_CONTEXT_WINDOW_TOKENS.
     "gpt-5.6": 272_000,
     "gpt-5.6-sol": 272_000,
     "gpt-5.6-terra": 272_000,

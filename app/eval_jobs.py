@@ -236,7 +236,7 @@ class EvalJobManager:
     def _ensure_worker_locked(self) -> None:
         if self._worker is not None and self._worker.is_alive():
             return
-        self._worker = threading.Thread(target=self._worker_loop, name="vp-eval-worker", daemon=True)
+        self._worker = threading.Thread(target=self._worker_loop, name="va-eval-worker", daemon=True)
         self._worker.start()
 
     def _worker_loop(self) -> None:

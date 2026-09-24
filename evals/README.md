@@ -1,6 +1,6 @@
 # Evals
 
-The current quality gate targets the active `VintageProgrammerRuntime` directly. It runs each live Agent attempt in an isolated workspace and evaluates the resulting files, tool trace, verification behavior, and completion state.
+The current quality gate targets the active `ValidationAssistantRuntime` directly. It runs each live Agent attempt in an isolated workspace and evaluates the resulting files, tool trace, verification behavior, and completion state.
 
 For a Chinese explanation of what every current suite and case actually tests, how to run it, and how to interpret the result, see [TEST_CONTENT.zh-CN.md](TEST_CONTENT.zh-CN.md).
 
@@ -46,7 +46,7 @@ The home-page `Eval` button exposes the same runner as a persisted background jo
   the next model request in the same active turn;
 - model-selected parallel `spawn_subagent` delegation, `wait_subagents` collection, and parent summary;
 - a long seeded Thread replayed through a compaction summary plus retained turns;
-- modification of an existing Team Skill in the isolated VP Skill Registry;
+- modification of an existing Team Skill in the isolated VA Skill Registry;
 - a failed verification followed by a successful recovery;
 - translation-only maintenance of a command-bearing Team Skill where any `exec_command` attempt fails the case;
 - review of command text inside a Skill without executing the referenced remote write;
@@ -87,7 +87,7 @@ Use `--name where_and_rg_query_miss_is_not_failure` to run only the query-miss r
 
 ## Company compiler adapter
 
-Set `VP_EVAL_CPP_VERIFY_SCRIPT` to the absolute path of a company-owned wrapper script when the portable fixture cannot use MSVC, `clang++`, or `g++` locally.
+Set `VA_EVAL_CPP_VERIFY_SCRIPT` to the absolute path of a company-owned wrapper script when the portable fixture cannot use MSVC, `clang++`, or `g++` locally.
 
 The runner invokes:
 

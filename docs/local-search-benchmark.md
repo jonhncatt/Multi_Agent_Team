@@ -44,11 +44,11 @@ LRU eviction signals the old walker to stop. As with filesystem threads in
 general, an OS-level blocked filesystem call cannot be forcibly interrupted;
 the caller can still return without waiting for that daemon walker.
 
-VP file mutations now invalidate affected snapshots lazily, including snapshots
+VA file mutations now invalidate affected snapshots lazily, including snapshots
 held by other executors/subagents in the same process. Multi-destination writes
 and shell operations invalidate conservatively, including partial failures.
 Read-only tools do not invalidate. After external changes or changes from a
-different VP process, call with `refresh=true`. `cache_hit`, `indexed_at`,
+different VA process, call with `refresh=true`. `cache_hit`, `indexed_at`,
 `scanned_file_count`, `walk_complete` and `duration_ms` describe the snapshot.
 Every invocation rechecks its root and returned paths against current read
 permissions, including cached paths replaced by symlinks.
@@ -100,15 +100,15 @@ content-only saved about 17–27% and direct rg about 75–78% on this empty que
 
 | Filename query | Milliseconds | Cache hit | Walk complete |
 | --- | ---: | --- | --- |
-| First `vprb` | 12.072 | no | yes |
-| Second `vprb` | 1.222 | yes | yes |
+| First `varb` | 12.072 | no | yes |
+| Second `varb` | 1.222 | yes | yes |
 | `v` | 6.909 | yes | yes |
-| `vp` | 6.839 | yes | yes |
-| `vpr` | 7.072 | yes | yes |
-| `vprb` | 1.155 | yes | yes |
+| `va` | 6.839 | yes | yes |
+| `var` | 7.072 | yes | yes |
+| `varb` | 1.155 | yes | yes |
 
 Short broad queries return 20 results and are explicitly truncated. Narrow
-`vprb` returns two paths. All warm queries reuse the same filename corpus.
+`varb` returns two paths. All warm queries reuse the same filename corpus.
 
 ## Verification
 

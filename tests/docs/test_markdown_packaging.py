@@ -14,10 +14,10 @@ def test_packaging_assets_exist() -> None:
     required = [
         REPO_ROOT / 'LICENSE',
         REPO_ROOT / 'README.en.md',
-        REPO_ROOT / 'agents' / 'vintage_programmer' / 'locales' / 'zh-CN' / 'soul.md',
-        REPO_ROOT / 'agents' / 'vintage_programmer' / 'locales' / 'zh-CN' / 'identity.md',
-        REPO_ROOT / 'agents' / 'vintage_programmer' / 'locales' / 'zh-CN' / 'agent.md',
-        REPO_ROOT / 'agents' / 'vintage_programmer' / 'locales' / 'zh-CN' / 'tools.md',
+        REPO_ROOT / 'agents' / 'validation_assistant' / 'locales' / 'zh-CN' / 'soul.md',
+        REPO_ROOT / 'agents' / 'validation_assistant' / 'locales' / 'zh-CN' / 'identity.md',
+        REPO_ROOT / 'agents' / 'validation_assistant' / 'locales' / 'zh-CN' / 'agent.md',
+        REPO_ROOT / 'agents' / 'validation_assistant' / 'locales' / 'zh-CN' / 'tools.md',
     ]
     for path in required:
         assert path.exists(), str(path)

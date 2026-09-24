@@ -16,7 +16,7 @@
 
 ## Live Eval 如何工作
 
-每次尝试都会把案例 fixture 复制到独立工作区，再让当前 `VintageProgrammerRuntime` 处理任务。结束后 runner 独立检查：
+每次尝试都会把案例 fixture 复制到独立工作区，再让当前 `ValidationAssistantRuntime` 处理任务。结束后 runner 独立检查：
 
 - Agent 是否阅读了任务要求的上下文文件；
 - 是否生成或修改了指定目标文件；

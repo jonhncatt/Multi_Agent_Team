@@ -35,7 +35,7 @@ def _split_paths(raw: str) -> list[str]:
     return [item.strip() for item in merged.split(os.pathsep) if item.strip()]
 
 
-_PRIMARY_ENV_PREFIX = "VP_"
+_PRIMARY_ENV_PREFIX = "VA_"
 
 
 def normalize_openai_base_url(raw_url: str) -> str:
@@ -96,42 +96,42 @@ def _strip_optional_quotes(value: str) -> str:
 
 _LLM_PROVIDER_PRESETS: dict[str, dict[str, object]] = {
     "openai": {
-        "api_key_env": "VP_OPENAI_API_KEY",
+        "api_key_env": "VA_OPENAI_API_KEY",
         "default_model": "gpt-5.4",
         "model_options": ["gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano", "gpt-5.1", "gpt-5-mini", "gpt-4.1"],
         "base_url": "",
         "use_responses_api": False,
     },
     "openai_compatible": {
-        "api_key_env": "VP_OPENAI_COMPAT_API_KEY",
+        "api_key_env": "VA_OPENAI_COMPAT_API_KEY",
         "default_model": "gpt-5.6-luna",
         "model_options": ["gpt-5.6-luna", "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano", "gpt-5.1", "gpt-5-mini", "gpt-4.1"],
         "base_url": "",
         "use_responses_api": False,
     },
     "deepseek": {
-        "api_key_env": "VP_DEEPSEEK_API_KEY",
+        "api_key_env": "VA_DEEPSEEK_API_KEY",
         "default_model": "deepseek-chat",
         "model_options": ["deepseek-chat", "deepseek-reasoner"],
         "base_url": "https://api.deepseek.com/v1",
         "use_responses_api": False,
     },
     "qwen": {
-        "api_key_env": "VP_DASHSCOPE_API_KEY",
+        "api_key_env": "VA_DASHSCOPE_API_KEY",
         "default_model": "qwen-plus",
         "model_options": ["qwen-plus", "qwen-max", "qwen-turbo"],
         "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
         "use_responses_api": False,
     },
     "moonshot": {
-        "api_key_env": "VP_MOONSHOT_API_KEY",
+        "api_key_env": "VA_MOONSHOT_API_KEY",
         "default_model": "moonshot-v1-8k",
         "model_options": ["moonshot-v1-8k", "moonshot-v1-32k", "moonshot-v1-128k"],
         "base_url": "https://api.moonshot.cn/v1",
         "use_responses_api": False,
     },
     "openrouter": {
-        "api_key_env": "VP_OPENROUTER_API_KEY",
+        "api_key_env": "VA_OPENROUTER_API_KEY",
         "default_model": "openai/gpt-5-mini",
         "model_options": [
             "openai/gpt-5-mini",
@@ -143,14 +143,14 @@ _LLM_PROVIDER_PRESETS: dict[str, dict[str, object]] = {
         "use_responses_api": False,
     },
     "groq": {
-        "api_key_env": "VP_GROQ_API_KEY",
+        "api_key_env": "VA_GROQ_API_KEY",
         "default_model": "llama-3.3-70b-versatile",
         "model_options": ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "mixtral-8x7b-32768"],
         "base_url": "https://api.groq.com/openai/v1",
         "use_responses_api": False,
     },
     "ollama": {
-        "api_key_env": "VP_OLLAMA_API_KEY",
+        "api_key_env": "VA_OLLAMA_API_KEY",
         "default_model": "llama3.2",
         "model_options": ["llama3.2", "qwen2.5-coder:7b", "deepseek-r1:7b"],
         "base_url": "http://127.0.0.1:11434/v1",
@@ -191,102 +191,102 @@ def _provider_env_token(provider: str) -> str:
 
 def _provider_specific_api_key_env_keys(provider: str) -> list[str]:
     mapping = {
-        "openai": ["VP_OPENAI_API_KEY"],
-        "openai_compatible": ["VP_OPENAI_COMPAT_API_KEY"],
-        "openrouter": ["VP_OPENROUTER_API_KEY"],
-        "deepseek": ["VP_DEEPSEEK_API_KEY"],
-        "qwen": ["VP_DASHSCOPE_API_KEY"],
-        "moonshot": ["VP_MOONSHOT_API_KEY"],
-        "groq": ["VP_GROQ_API_KEY"],
-        "ollama": ["VP_OLLAMA_API_KEY"],
+        "openai": ["VA_OPENAI_API_KEY"],
+        "openai_compatible": ["VA_OPENAI_COMPAT_API_KEY"],
+        "openrouter": ["VA_OPENROUTER_API_KEY"],
+        "deepseek": ["VA_DEEPSEEK_API_KEY"],
+        "qwen": ["VA_DASHSCOPE_API_KEY"],
+        "moonshot": ["VA_MOONSHOT_API_KEY"],
+        "groq": ["VA_GROQ_API_KEY"],
+        "ollama": ["VA_OLLAMA_API_KEY"],
     }
     return list(mapping.get(provider, []))
 
 
 def _provider_specific_base_url_keys(provider: str) -> list[str]:
     mapping = {
-        "openai": ["VP_OPENAI_BASE_URL"],
-        "openai_compatible": ["VP_OPENAI_COMPAT_BASE_URL"],
-        "openrouter": ["VP_OPENROUTER_BASE_URL"],
-        "deepseek": ["VP_DEEPSEEK_BASE_URL"],
-        "qwen": ["VP_DASHSCOPE_BASE_URL"],
-        "moonshot": ["VP_MOONSHOT_BASE_URL"],
-        "groq": ["VP_GROQ_BASE_URL"],
-        "ollama": ["VP_OLLAMA_BASE_URL"],
+        "openai": ["VA_OPENAI_BASE_URL"],
+        "openai_compatible": ["VA_OPENAI_COMPAT_BASE_URL"],
+        "openrouter": ["VA_OPENROUTER_BASE_URL"],
+        "deepseek": ["VA_DEEPSEEK_BASE_URL"],
+        "qwen": ["VA_DASHSCOPE_BASE_URL"],
+        "moonshot": ["VA_MOONSHOT_BASE_URL"],
+        "groq": ["VA_GROQ_BASE_URL"],
+        "ollama": ["VA_OLLAMA_BASE_URL"],
     }
     return list(mapping.get(provider, []))
 
 
 def _provider_specific_ca_cert_keys(provider: str) -> list[str]:
     mapping = {
-        "openai": ["VP_OPENAI_CA_CERT_PATH"],
-        "openai_compatible": ["VP_OPENAI_COMPAT_CA_CERT_PATH"],
-        "openrouter": ["VP_OPENROUTER_CA_CERT_PATH"],
-        "deepseek": ["VP_DEEPSEEK_CA_CERT_PATH"],
-        "qwen": ["VP_DASHSCOPE_CA_CERT_PATH"],
-        "moonshot": ["VP_MOONSHOT_CA_CERT_PATH"],
-        "groq": ["VP_GROQ_CA_CERT_PATH"],
-        "ollama": ["VP_OLLAMA_CA_CERT_PATH"],
+        "openai": ["VA_OPENAI_CA_CERT_PATH"],
+        "openai_compatible": ["VA_OPENAI_COMPAT_CA_CERT_PATH"],
+        "openrouter": ["VA_OPENROUTER_CA_CERT_PATH"],
+        "deepseek": ["VA_DEEPSEEK_CA_CERT_PATH"],
+        "qwen": ["VA_DASHSCOPE_CA_CERT_PATH"],
+        "moonshot": ["VA_MOONSHOT_CA_CERT_PATH"],
+        "groq": ["VA_GROQ_CA_CERT_PATH"],
+        "ollama": ["VA_OLLAMA_CA_CERT_PATH"],
     }
     return list(mapping.get(provider, []))
 
 
 def _provider_specific_temperature_keys(provider: str) -> list[str]:
     mapping = {
-        "openai": ["VP_OPENAI_TEMPERATURE"],
-        "openai_compatible": ["VP_OPENAI_COMPAT_TEMPERATURE"],
-        "openrouter": ["VP_OPENROUTER_TEMPERATURE"],
-        "deepseek": ["VP_DEEPSEEK_TEMPERATURE"],
-        "qwen": ["VP_DASHSCOPE_TEMPERATURE"],
-        "moonshot": ["VP_MOONSHOT_TEMPERATURE"],
-        "groq": ["VP_GROQ_TEMPERATURE"],
-        "ollama": ["VP_OLLAMA_TEMPERATURE"],
+        "openai": ["VA_OPENAI_TEMPERATURE"],
+        "openai_compatible": ["VA_OPENAI_COMPAT_TEMPERATURE"],
+        "openrouter": ["VA_OPENROUTER_TEMPERATURE"],
+        "deepseek": ["VA_DEEPSEEK_TEMPERATURE"],
+        "qwen": ["VA_DASHSCOPE_TEMPERATURE"],
+        "moonshot": ["VA_MOONSHOT_TEMPERATURE"],
+        "groq": ["VA_GROQ_TEMPERATURE"],
+        "ollama": ["VA_OLLAMA_TEMPERATURE"],
     }
     return list(mapping.get(provider, []))
 
 
 def _provider_specific_responses_api_keys(provider: str) -> list[str]:
     mapping = {
-        "openai": ["VP_OPENAI_USE_RESPONSES_API"],
-        "openai_compatible": ["VP_OPENAI_COMPAT_USE_RESPONSES_API"],
-        "openrouter": ["VP_OPENROUTER_USE_RESPONSES_API"],
-        "deepseek": ["VP_DEEPSEEK_USE_RESPONSES_API"],
-        "qwen": ["VP_DASHSCOPE_USE_RESPONSES_API"],
-        "moonshot": ["VP_MOONSHOT_USE_RESPONSES_API"],
-        "groq": ["VP_GROQ_USE_RESPONSES_API"],
-        "ollama": ["VP_OLLAMA_USE_RESPONSES_API"],
+        "openai": ["VA_OPENAI_USE_RESPONSES_API"],
+        "openai_compatible": ["VA_OPENAI_COMPAT_USE_RESPONSES_API"],
+        "openrouter": ["VA_OPENROUTER_USE_RESPONSES_API"],
+        "deepseek": ["VA_DEEPSEEK_USE_RESPONSES_API"],
+        "qwen": ["VA_DASHSCOPE_USE_RESPONSES_API"],
+        "moonshot": ["VA_MOONSHOT_USE_RESPONSES_API"],
+        "groq": ["VA_GROQ_USE_RESPONSES_API"],
+        "ollama": ["VA_OLLAMA_USE_RESPONSES_API"],
     }
     return list(mapping.get(provider, []))
 
 
 def _provider_specific_default_model_keys(provider: str) -> list[str]:
     mapping = {
-        "openai": ["VP_OPENAI_DEFAULT_MODEL"],
-        "openai_compatible": ["VP_OPENAI_COMPAT_DEFAULT_MODEL"],
-        "openrouter": ["VP_OPENROUTER_DEFAULT_MODEL"],
-        "deepseek": ["VP_DEEPSEEK_DEFAULT_MODEL"],
-        "qwen": ["VP_DASHSCOPE_DEFAULT_MODEL"],
-        "moonshot": ["VP_MOONSHOT_DEFAULT_MODEL"],
-        "groq": ["VP_GROQ_DEFAULT_MODEL"],
-        "ollama": ["VP_OLLAMA_DEFAULT_MODEL"],
+        "openai": ["VA_OPENAI_DEFAULT_MODEL"],
+        "openai_compatible": ["VA_OPENAI_COMPAT_DEFAULT_MODEL"],
+        "openrouter": ["VA_OPENROUTER_DEFAULT_MODEL"],
+        "deepseek": ["VA_DEEPSEEK_DEFAULT_MODEL"],
+        "qwen": ["VA_DASHSCOPE_DEFAULT_MODEL"],
+        "moonshot": ["VA_MOONSHOT_DEFAULT_MODEL"],
+        "groq": ["VA_GROQ_DEFAULT_MODEL"],
+        "ollama": ["VA_OLLAMA_DEFAULT_MODEL"],
     }
     token = _provider_env_token(provider)
-    return _dedupe_keep_order([*mapping.get(provider, []), f"VP_PROVIDER_{token}_DEFAULT_MODEL"])
+    return _dedupe_keep_order([*mapping.get(provider, []), f"VA_PROVIDER_{token}_DEFAULT_MODEL"])
 
 
 def _provider_specific_model_fallback_keys(provider: str) -> list[str]:
     mapping = {
-        "openai": ["VP_OPENAI_MODEL_FALLBACKS"],
-        "openai_compatible": ["VP_OPENAI_COMPAT_MODEL_FALLBACKS"],
-        "openrouter": ["VP_OPENROUTER_MODEL_FALLBACKS"],
-        "deepseek": ["VP_DEEPSEEK_MODEL_FALLBACKS"],
-        "qwen": ["VP_DASHSCOPE_MODEL_FALLBACKS"],
-        "moonshot": ["VP_MOONSHOT_MODEL_FALLBACKS"],
-        "groq": ["VP_GROQ_MODEL_FALLBACKS"],
-        "ollama": ["VP_OLLAMA_MODEL_FALLBACKS"],
+        "openai": ["VA_OPENAI_MODEL_FALLBACKS"],
+        "openai_compatible": ["VA_OPENAI_COMPAT_MODEL_FALLBACKS"],
+        "openrouter": ["VA_OPENROUTER_MODEL_FALLBACKS"],
+        "deepseek": ["VA_DEEPSEEK_MODEL_FALLBACKS"],
+        "qwen": ["VA_DASHSCOPE_MODEL_FALLBACKS"],
+        "moonshot": ["VA_MOONSHOT_MODEL_FALLBACKS"],
+        "groq": ["VA_GROQ_MODEL_FALLBACKS"],
+        "ollama": ["VA_OLLAMA_MODEL_FALLBACKS"],
     }
     token = _provider_env_token(provider)
-    return _dedupe_keep_order([*mapping.get(provider, []), f"VP_PROVIDER_{token}_MODEL_FALLBACKS"])
+    return _dedupe_keep_order([*mapping.get(provider, []), f"VA_PROVIDER_{token}_MODEL_FALLBACKS"])
 
 
 def _has_any_env_value(keys: list[str]) -> bool:
@@ -301,12 +301,12 @@ def _should_dotenv_override(key: str) -> bool:
 
 
 def _load_dotenv_if_present() -> None:
-    skip_raw = str(_env("VP_SKIP_DOTENV", default="") or "").strip().lower()
+    skip_raw = str(_env("VA_SKIP_DOTENV", default="") or "").strip().lower()
     if skip_raw in {"1", "true", "yes", "on"}:
         return
 
     application_root = Path(__file__).resolve().parent.parent
-    configured_path = str(os.environ.get("VP_DOTENV_PATH") or "").strip()
+    configured_path = str(os.environ.get("VA_DOTENV_PATH") or "").strip()
     dotenv_path = Path(configured_path).expanduser() if configured_path else application_root / ".env"
     if not dotenv_path.is_absolute():
         dotenv_path = application_root / dotenv_path
@@ -472,17 +472,17 @@ def _resolve_provider_runtime_settings(
     llm_api_key_env_keys = _dedupe_keep_order(
         [
             *_provider_specific_api_key_env_keys(normalized_provider),
-            f"VP_PROVIDER_{llm_provider_token}_API_KEY",
-            "VP_LLM_API_KEY",
+            f"VA_PROVIDER_{llm_provider_token}_API_KEY",
+            "VA_LLM_API_KEY",
             preset_api_key_env,
         ]
     )
-    llm_primary_api_key_env = llm_api_key_env_keys[0] if llm_api_key_env_keys else "VP_LLM_API_KEY"
+    llm_primary_api_key_env = llm_api_key_env_keys[0] if llm_api_key_env_keys else "VA_LLM_API_KEY"
 
     llm_base_url_keys = [
         *_provider_specific_base_url_keys(normalized_provider),
-        f"VP_PROVIDER_{llm_provider_token}_BASE_URL",
-        "VP_LLM_BASE_URL",
+        f"VA_PROVIDER_{llm_provider_token}_BASE_URL",
+        "VA_LLM_BASE_URL",
     ]
     openai_base_url = (
         _env(*llm_base_url_keys, default=str(llm_provider_preset.get("base_url") or "")) or ""
@@ -490,18 +490,18 @@ def _resolve_provider_runtime_settings(
 
     llm_ca_cert_keys = [
         *_provider_specific_ca_cert_keys(normalized_provider),
-        f"VP_PROVIDER_{llm_provider_token}_CA_CERT_PATH",
-        "VP_LLM_CA_CERT_PATH",
-        "VP_CA_CERT_PATH",
+        f"VA_PROVIDER_{llm_provider_token}_CA_CERT_PATH",
+        "VA_LLM_CA_CERT_PATH",
+        "VA_CA_CERT_PATH",
         "SSL_CERT_FILE",
     ]
     openai_ca_cert_path = (_env(*llm_ca_cert_keys, default="") or "").strip() or None
 
     llm_temperature_keys = [
         *_provider_specific_temperature_keys(normalized_provider),
-        f"VP_PROVIDER_{llm_provider_token}_TEMPERATURE",
-        "VP_LLM_TEMPERATURE",
-        "VP_TEMPERATURE",
+        f"VA_PROVIDER_{llm_provider_token}_TEMPERATURE",
+        "VA_LLM_TEMPERATURE",
+        "VA_TEMPERATURE",
     ]
     openai_temperature_raw = (_env(*llm_temperature_keys, default="") or "").strip()
     openai_temperature: float | None = None
@@ -514,9 +514,9 @@ def _resolve_provider_runtime_settings(
     default_use_responses = "true" if bool(llm_provider_preset.get("use_responses_api")) else "false"
     llm_use_responses_keys = [
         *_provider_specific_responses_api_keys(normalized_provider),
-        f"VP_PROVIDER_{llm_provider_token}_USE_RESPONSES_API",
-        "VP_LLM_USE_RESPONSES_API",
-        "VP_USE_RESPONSES_API",
+        f"VA_PROVIDER_{llm_provider_token}_USE_RESPONSES_API",
+        "VA_LLM_USE_RESPONSES_API",
+        "VA_USE_RESPONSES_API",
     ]
     use_responses_raw = (
         _env(*llm_use_responses_keys, default=default_use_responses) or default_use_responses
@@ -528,8 +528,8 @@ def _resolve_provider_runtime_settings(
     default_model_keys = list(_provider_specific_default_model_keys(normalized_provider))
     fallback_model_keys = list(_provider_specific_model_fallback_keys(normalized_provider))
     if include_global_model_keys:
-        default_model_keys.append("VP_DEFAULT_MODEL")
-        fallback_model_keys.append("VP_MODEL_FALLBACKS")
+        default_model_keys.append("VA_DEFAULT_MODEL")
+        fallback_model_keys.append("VA_MODEL_FALLBACKS")
     resolved_default_model = (
         _env(*default_model_keys, default=provider_default_model)
         or provider_default_model
@@ -547,23 +547,23 @@ def _resolve_provider_runtime_settings(
     explicit_env_keys = _dedupe_keep_order(
         [
             *_provider_specific_api_key_env_keys(normalized_provider),
-            f"VP_PROVIDER_{llm_provider_token}_API_KEY",
+            f"VA_PROVIDER_{llm_provider_token}_API_KEY",
             *_provider_specific_base_url_keys(normalized_provider),
-            f"VP_PROVIDER_{llm_provider_token}_BASE_URL",
+            f"VA_PROVIDER_{llm_provider_token}_BASE_URL",
             *_provider_specific_ca_cert_keys(normalized_provider),
-            f"VP_PROVIDER_{llm_provider_token}_CA_CERT_PATH",
+            f"VA_PROVIDER_{llm_provider_token}_CA_CERT_PATH",
             *_provider_specific_temperature_keys(normalized_provider),
-            f"VP_PROVIDER_{llm_provider_token}_TEMPERATURE",
+            f"VA_PROVIDER_{llm_provider_token}_TEMPERATURE",
             *_provider_specific_responses_api_keys(normalized_provider),
-            f"VP_PROVIDER_{llm_provider_token}_USE_RESPONSES_API",
+            f"VA_PROVIDER_{llm_provider_token}_USE_RESPONSES_API",
             *_provider_specific_default_model_keys(normalized_provider),
             *_provider_specific_model_fallback_keys(normalized_provider),
             preset_api_key_env,
         ]
     )
     explicit_current_provider = (
-        _env_is_set("VP_LLM_PROVIDER", "VP_MODEL_PROVIDER")
-        and _normalize_llm_provider(_env("VP_LLM_PROVIDER", "VP_MODEL_PROVIDER", default="") or "") == normalized_provider
+        _env_is_set("VA_LLM_PROVIDER", "VA_MODEL_PROVIDER")
+        and _normalize_llm_provider(_env("VA_LLM_PROVIDER", "VA_MODEL_PROVIDER", default="") or "") == normalized_provider
     )
     configured = explicit_current_provider or _has_any_env_value(explicit_env_keys)
 
@@ -735,45 +735,45 @@ def get_access_roots(config: AppConfig) -> list[Path]:
 def load_config() -> AppConfig:
     _load_dotenv_if_present()
 
-    workspace_root = Path(_env("VP_WORKSPACE_ROOT", default=os.getcwd()) or os.getcwd()).resolve()
+    workspace_root = Path(_env("VA_WORKSPACE_ROOT", default=os.getcwd()) or os.getcwd()).resolve()
     sessions_dir = Path(
         _env(
-            "VP_SESSIONS_DIR",
+            "VA_SESSIONS_DIR",
             default=str(workspace_root / "app" / "data" / "sessions"),
         )
         or str(workspace_root / "app" / "data" / "sessions")
     ).resolve()
     runs_dir = Path(
         _env(
-            "VP_RUNS_DIR",
+            "VA_RUNS_DIR",
             default=str(workspace_root / "app" / "data" / "runs"),
         )
         or str(workspace_root / "app" / "data" / "runs")
     ).resolve()
     session_meta_dir = Path(
         _env(
-            "VP_SESSION_META_DIR",
+            "VA_SESSION_META_DIR",
             default=str(workspace_root / "app" / "data" / "session_meta"),
         )
         or str(workspace_root / "app" / "data" / "session_meta")
     ).resolve()
     projects_registry_path = Path(
         _env(
-            "VP_PROJECTS_REGISTRY_PATH",
+            "VA_PROJECTS_REGISTRY_PATH",
             default=str(workspace_root / "app" / "data" / "projects.json"),
         )
         or str(workspace_root / "app" / "data" / "projects.json")
     ).resolve()
     uploads_dir = Path(
         _env(
-            "VP_UPLOADS_DIR",
+            "VA_UPLOADS_DIR",
             default=str(workspace_root / "app" / "data" / "uploads"),
         )
         or str(workspace_root / "app" / "data" / "uploads")
     ).resolve()
     token_stats_path = Path(
         _env(
-            "VP_TOKEN_STATS_PATH",
+            "VA_TOKEN_STATS_PATH",
             default=str(workspace_root / "app" / "data" / "token_stats.json"),
         )
         or str(workspace_root / "app" / "data" / "token_stats.json")
@@ -786,14 +786,14 @@ def load_config() -> AppConfig:
     token_stats_path.parent.mkdir(parents=True, exist_ok=True)
 
     allowed_commands_raw = _env(
-        "VP_ALLOWED_COMMANDS",
+        "VA_ALLOWED_COMMANDS",
         default="pwd,ls,dir,where,cat,rg,head,tail,wc,find,echo,printf,date,python,py,python3,git,npm,node,pytest,ruff,sed,awk,mkdir,touch,cp,mv,tee,true",
     ) or "pwd,ls,dir,where,cat,rg,head,tail,wc,find,echo,printf,date,python,py,python3,git,npm,node,pytest,ruff,sed,awk,mkdir,touch,cp,mv,tee,true"
 
     llm_provider = _normalize_llm_provider(
         _env(
-            "VP_LLM_PROVIDER",
-            "VP_MODEL_PROVIDER",
+            "VA_LLM_PROVIDER",
+            "VA_MODEL_PROVIDER",
             default="openai",
         )
         or "openai"
@@ -805,34 +805,34 @@ def load_config() -> AppConfig:
     llm_api_key_env_keys = _dedupe_keep_order(
         [
             *_provider_specific_api_key_env_keys(llm_provider),
-            f"VP_PROVIDER_{llm_provider_token}_API_KEY",
-            "VP_LLM_API_KEY",
+            f"VA_PROVIDER_{llm_provider_token}_API_KEY",
+            "VA_LLM_API_KEY",
             preset_api_key_env,
         ]
     )
-    llm_primary_api_key_env = llm_api_key_env_keys[0] if llm_api_key_env_keys else "VP_LLM_API_KEY"
+    llm_primary_api_key_env = llm_api_key_env_keys[0] if llm_api_key_env_keys else "VA_LLM_API_KEY"
 
     llm_base_url_keys = [
         *_provider_specific_base_url_keys(llm_provider),
-        f"VP_PROVIDER_{llm_provider_token}_BASE_URL",
-        "VP_LLM_BASE_URL",
+        f"VA_PROVIDER_{llm_provider_token}_BASE_URL",
+        "VA_LLM_BASE_URL",
     ]
     openai_base_url = (
         _env(*llm_base_url_keys, default=str(llm_provider_preset.get("base_url") or "")) or ""
     ).strip() or None
     llm_ca_cert_keys = [
         *_provider_specific_ca_cert_keys(llm_provider),
-        f"VP_PROVIDER_{llm_provider_token}_CA_CERT_PATH",
-        "VP_LLM_CA_CERT_PATH",
-        "VP_CA_CERT_PATH",
+        f"VA_PROVIDER_{llm_provider_token}_CA_CERT_PATH",
+        "VA_LLM_CA_CERT_PATH",
+        "VA_CA_CERT_PATH",
         "SSL_CERT_FILE",
     ]
     openai_ca_cert_path = (_env(*llm_ca_cert_keys, default="") or "").strip() or None
     llm_temperature_keys = [
         *_provider_specific_temperature_keys(llm_provider),
-        f"VP_PROVIDER_{llm_provider_token}_TEMPERATURE",
-        "VP_LLM_TEMPERATURE",
-        "VP_TEMPERATURE",
+        f"VA_PROVIDER_{llm_provider_token}_TEMPERATURE",
+        "VA_LLM_TEMPERATURE",
+        "VA_TEMPERATURE",
     ]
     openai_temperature_raw = (_env(*llm_temperature_keys, default="") or "").strip()
     openai_temperature: float | None = None
@@ -845,9 +845,9 @@ def load_config() -> AppConfig:
     default_use_responses = "true" if bool(llm_provider_preset.get("use_responses_api")) else "false"
     llm_use_responses_keys = [
         *_provider_specific_responses_api_keys(llm_provider),
-        f"VP_PROVIDER_{llm_provider_token}_USE_RESPONSES_API",
-        "VP_LLM_USE_RESPONSES_API",
-        "VP_USE_RESPONSES_API",
+        f"VA_PROVIDER_{llm_provider_token}_USE_RESPONSES_API",
+        "VA_LLM_USE_RESPONSES_API",
+        "VA_USE_RESPONSES_API",
     ]
     use_responses_raw = (
         _env(*llm_use_responses_keys, default=default_use_responses) or default_use_responses
@@ -855,12 +855,12 @@ def load_config() -> AppConfig:
     openai_use_responses_api = use_responses_raw in {"1", "true", "yes", "on"}
 
     model_fallbacks = _split_csv(
-        _env("VP_MODEL_FALLBACKS", default="") or ""
+        _env("VA_MODEL_FALLBACKS", default="") or ""
     )
     model_cooldown_base_sec = int(
         (
             _env(
-                "VP_MODEL_COOLDOWN_BASE_SEC",
+                "VA_MODEL_COOLDOWN_BASE_SEC",
                 default="60",
             )
             or "60"
@@ -869,7 +869,7 @@ def load_config() -> AppConfig:
     model_cooldown_max_sec = int(
         (
             _env(
-                "VP_MODEL_COOLDOWN_MAX_SEC",
+                "VA_MODEL_COOLDOWN_MAX_SEC",
                 default="3600",
             )
             or "3600"
@@ -878,7 +878,7 @@ def load_config() -> AppConfig:
 
     sibling_access_raw = (
         _env(
-            "VP_ALLOW_WORKSPACE_SIBLING_ACCESS",
+            "VA_ALLOW_WORKSPACE_SIBLING_ACCESS",
             default="false",
         )
         or "false"
@@ -896,65 +896,65 @@ def load_config() -> AppConfig:
     default_extra_roots = [str(path) for path in default_extra_root_paths]
     extra_allowed_roots_source = (
         "env_override"
-        if _env_is_set("VP_EXTRA_ALLOWED_ROOTS")
+        if _env_is_set("VA_EXTRA_ALLOWED_ROOTS")
         else "platform_default"
     )
     extra_allowed_roots_raw = (
         _env(
-            "VP_EXTRA_ALLOWED_ROOTS",
+            "VA_EXTRA_ALLOWED_ROOTS",
             default="",
         )
         or ""
     ).strip()
     extra_allowed_roots = [Path(item).resolve() for item in _split_paths(extra_allowed_roots_raw)]
-    permission_profile = normalize_permission_profile(_env("VP_PERMISSION_PROFILE", default="auto"))
+    permission_profile = normalize_permission_profile(_env("VA_PERMISSION_PROFILE", default="auto"))
 
-    web_domains_raw = (_env("VP_WEB_ALLOWED_DOMAINS", default="") or "").strip()
+    web_domains_raw = (_env("VA_WEB_ALLOWED_DOMAINS", default="") or "").strip()
     web_allowed_domains = _split_csv(web_domains_raw)
     web_allow_all_domains = len(web_allowed_domains) == 0
 
     web_fetch_timeout_sec = int(
-        (_env("VP_WEB_FETCH_TIMEOUT_SEC", default="12") or "12").strip()
+        (_env("VA_WEB_FETCH_TIMEOUT_SEC", default="12") or "12").strip()
     )
     web_fetch_max_chars = int(
-        (_env("VP_WEB_FETCH_MAX_CHARS", default="120000") or "120000").strip()
+        (_env("VA_WEB_FETCH_MAX_CHARS", default="120000") or "120000").strip()
     )
     web_skip_tls_verify_raw = (
-        _env("VP_WEB_SKIP_TLS_VERIFY", default="false") or "false"
+        _env("VA_WEB_SKIP_TLS_VERIFY", default="false") or "false"
     ).strip().lower()
     web_skip_tls_verify = web_skip_tls_verify_raw in {"1", "true", "yes", "on"}
     web_ca_cert_path = (
         _env(
-            "VP_WEB_CA_CERT_PATH",
+            "VA_WEB_CA_CERT_PATH",
             default=(openai_ca_cert_path or ""),
         )
         or ""
     ).strip() or None
-    browser_mode = (_env("VP_BROWSER_MODE", default="playwright") or "playwright").strip().lower()
+    browser_mode = (_env("VA_BROWSER_MODE", default="playwright") or "playwright").strip().lower()
     if browser_mode not in {"playwright", "chrome_profile"}:
         browser_mode = "playwright"
-    browser_channel = (_env("VP_BROWSER_CHANNEL", default="chrome") or "chrome").strip()
-    browser_headless_raw = (_env("VP_BROWSER_HEADLESS", default="true") or "true").strip().lower()
+    browser_channel = (_env("VA_BROWSER_CHANNEL", default="chrome") or "chrome").strip()
+    browser_headless_raw = (_env("VA_BROWSER_HEADLESS", default="true") or "true").strip().lower()
     browser_headless = browser_headless_raw in {"1", "true", "yes", "on"}
-    browser_user_data_dir_raw = (_env("VP_BROWSER_USER_DATA_DIR", default="") or "").strip()
+    browser_user_data_dir_raw = (_env("VA_BROWSER_USER_DATA_DIR", default="") or "").strip()
     browser_user_data_dir: Path | None = None
     if browser_user_data_dir_raw:
         browser_user_data_dir_candidate = Path(browser_user_data_dir_raw).expanduser()
         if not browser_user_data_dir_candidate.is_absolute():
             browser_user_data_dir_candidate = workspace_root / browser_user_data_dir_candidate
         browser_user_data_dir = browser_user_data_dir_candidate.resolve()
-    browser_executable_path = (_env("VP_BROWSER_EXECUTABLE_PATH", default="") or "").strip()
-    browser_proxy_server = (_env("VP_BROWSER_PROXY_SERVER", default="") or "").strip()
-    browser_ignore_https_raw = (_env("VP_BROWSER_IGNORE_HTTPS_ERRORS", default="false") or "false").strip().lower()
+    browser_executable_path = (_env("VA_BROWSER_EXECUTABLE_PATH", default="") or "").strip()
+    browser_proxy_server = (_env("VA_BROWSER_PROXY_SERVER", default="") or "").strip()
+    browser_ignore_https_raw = (_env("VA_BROWSER_IGNORE_HTTPS_ERRORS", default="false") or "false").strip().lower()
     browser_ignore_https_errors = browser_ignore_https_raw in {"1", "true", "yes", "on"}
     browser_sandbox_default = "true" if browser_mode == "chrome_profile" else "false"
     browser_chromium_sandbox_raw = (
-        _env("VP_BROWSER_CHROMIUM_SANDBOX", default=browser_sandbox_default) or browser_sandbox_default
+        _env("VA_BROWSER_CHROMIUM_SANDBOX", default=browser_sandbox_default) or browser_sandbox_default
     ).strip().lower()
     browser_chromium_sandbox = browser_chromium_sandbox_raw in {"1", "true", "yes", "on"}
     browser_password_manager_default = "true" if browser_mode == "chrome_profile" else "false"
     browser_disable_password_manager_raw = (
-        _env("VP_BROWSER_DISABLE_PASSWORD_MANAGER", default=browser_password_manager_default)
+        _env("VA_BROWSER_DISABLE_PASSWORD_MANAGER", default=browser_password_manager_default)
         or browser_password_manager_default
     ).strip().lower()
     browser_disable_password_manager = browser_disable_password_manager_raw in {"1", "true", "yes", "on"}
@@ -971,7 +971,7 @@ def load_config() -> AppConfig:
     tool_result_soft_trim_chars = int(
         (
             _env(
-                "VP_TOOL_RESULT_SOFT_TRIM_CHARS",
+                "VA_TOOL_RESULT_SOFT_TRIM_CHARS",
                 default="40000",
             )
             or "40000"
@@ -980,7 +980,7 @@ def load_config() -> AppConfig:
     tool_result_hard_clear_chars = int(
         (
             _env(
-                "VP_TOOL_RESULT_HARD_CLEAR_CHARS",
+                "VA_TOOL_RESULT_HARD_CLEAR_CHARS",
                 default="180000",
             )
             or "180000"
@@ -989,7 +989,7 @@ def load_config() -> AppConfig:
     tool_result_head_chars = int(
         (
             _env(
-                "VP_TOOL_RESULT_HEAD_CHARS",
+                "VA_TOOL_RESULT_HEAD_CHARS",
                 default="8000",
             )
             or "8000"
@@ -998,7 +998,7 @@ def load_config() -> AppConfig:
     tool_result_tail_chars = int(
         (
             _env(
-                "VP_TOOL_RESULT_TAIL_CHARS",
+                "VA_TOOL_RESULT_TAIL_CHARS",
                 default="4000",
             )
             or "4000"
@@ -1007,7 +1007,7 @@ def load_config() -> AppConfig:
     tool_context_prune_keep_last = int(
         (
             _env(
-                "VP_TOOL_CONTEXT_PRUNE_KEEP_LAST",
+                "VA_TOOL_CONTEXT_PRUNE_KEEP_LAST",
                 default="3",
             )
             or "3"
@@ -1015,55 +1015,55 @@ def load_config() -> AppConfig:
     )
     max_concurrent_runs = int(
         (
-            _env("VP_MAX_CONCURRENT_RUNS", default="5")
+            _env("VA_MAX_CONCURRENT_RUNS", default="5")
             or "5"
         ).strip()
     )
     max_concurrent_subagents = int(
         (
-            _env("VP_MAX_CONCURRENT_SUBAGENTS", default="3")
+            _env("VA_MAX_CONCURRENT_SUBAGENTS", default="3")
             or "3"
         ).strip()
     )
     run_queue_wait_notice_ms = int(
         (
             _env(
-                "VP_RUN_QUEUE_WAIT_NOTICE_MS",
+                "VA_RUN_QUEUE_WAIT_NOTICE_MS",
                 default="1500",
             )
             or "1500"
         ).strip()
     )
     execution_mode = (
-        _env("VP_EXECUTION_MODE", default="host") or "host"
+        _env("VA_EXECUTION_MODE", default="host") or "host"
     ).strip().lower()
     if execution_mode not in {"host", "docker"}:
         execution_mode = "host"
     docker_bin = (
-        _env("VP_DOCKER_BIN", default="docker") or "docker"
+        _env("VA_DOCKER_BIN", default="docker") or "docker"
     ).strip()
     docker_image = (
-        _env("VP_DOCKER_IMAGE", default="python:3.11-slim")
+        _env("VA_DOCKER_IMAGE", default="python:3.11-slim")
         or "python:3.11-slim"
     ).strip()
     docker_network = (
-        _env("VP_DOCKER_NETWORK", default="none") or "none"
+        _env("VA_DOCKER_NETWORK", default="none") or "none"
     ).strip()
     docker_memory = (
-        _env("VP_DOCKER_MEMORY", default="2g") or "2g"
+        _env("VA_DOCKER_MEMORY", default="2g") or "2g"
     ).strip()
     docker_cpus = (
-        _env("VP_DOCKER_CPUS", default="1.0") or "1.0"
+        _env("VA_DOCKER_CPUS", default="1.0") or "1.0"
     ).strip()
     docker_pids_limit = int(
-        (_env("VP_DOCKER_PIDS_LIMIT", default="256") or "256").strip()
+        (_env("VA_DOCKER_PIDS_LIMIT", default="256") or "256").strip()
     )
     docker_container_prefix = (
-        _env("VP_DOCKER_CONTAINER_PREFIX", default="multi-agent-team-sbx")
+        _env("VA_DOCKER_CONTAINER_PREFIX", default="multi-agent-team-sbx")
         or "multi-agent-team-sbx"
     ).strip()
     enable_session_tools_raw = (
-        _env("VP_ENABLE_SESSION_TOOLS", default="true") or "true"
+        _env("VA_ENABLE_SESSION_TOOLS", default="true") or "true"
     ).strip().lower()
     enable_session_tools = enable_session_tools_raw in {"1", "true", "yes", "on"}
     provider_runtime = _resolve_provider_runtime_settings(llm_provider, active_provider=llm_provider)
@@ -1122,19 +1122,19 @@ def load_config() -> AppConfig:
         model_cooldown_max_sec=max(60, min(86400, model_cooldown_max_sec)),
     summary_model=(
             _env(
-                "VP_SUMMARY_MODEL",
-                "VP_SUMMARY_MODE",
+                "VA_SUMMARY_MODEL",
+                "VA_SUMMARY_MODE",
                 default=provider_default_model,
             )
             or provider_default_model
         ),
-        system_prompt=_env("VP_SYSTEM_PROMPT", default=DEFAULT_SYSTEM_PROMPT)
+        system_prompt=_env("VA_SYSTEM_PROMPT", default=DEFAULT_SYSTEM_PROMPT)
         or DEFAULT_SYSTEM_PROMPT,
         max_output_tokens=max(
             120,
             min(
                 128000,
-                int(_env("VP_MAX_OUTPUT_TOKENS", default="16384") or "16384"),
+                int(_env("VA_MAX_OUTPUT_TOKENS", default="16384") or "16384"),
             ),
         ),
         summary_trigger_turns=max(
@@ -1142,7 +1142,7 @@ def load_config() -> AppConfig:
             min(
                 10000,
                 int(
-                    _env("VP_SUMMARY_TRIGGER_TURNS", default="2000")
+                    _env("VA_SUMMARY_TRIGGER_TURNS", default="2000")
                     or "2000"
                 ),
             ),
@@ -1151,7 +1151,7 @@ def load_config() -> AppConfig:
             2,
             min(
                 2000,
-                int(_env("VP_MAX_CONTEXT_TURNS", default="2000") or "2000"),
+                int(_env("VA_MAX_CONTEXT_TURNS", default="2000") or "2000"),
             ),
         ),
         python_command=python_command,
@@ -1161,7 +1161,7 @@ def load_config() -> AppConfig:
             min(
                 4000000,
                 int(
-                    _env("VP_MAX_USER_REQUEST_CHARS", default="4000000")
+                    _env("VA_MAX_USER_REQUEST_CHARS", default="4000000")
                     or "4000000"
                 ),
             ),
@@ -1171,7 +1171,7 @@ def load_config() -> AppConfig:
             min(
                 1000000,
                 int(
-                    _env("VP_MAX_ATTACHMENT_CHARS", default="1000000")
+                    _env("VA_MAX_ATTACHMENT_CHARS", default="1000000")
                     or "1000000"
                 ),
             ),
@@ -1180,64 +1180,64 @@ def load_config() -> AppConfig:
             0,
             min(
                 2_000_000,
-                int(_env("VP_CONTEXT_WINDOW_TOKENS", default="0") or "0"),
+                int(_env("VA_CONTEXT_WINDOW_TOKENS", default="0") or "0"),
             ),
         ),
         model_max_context_window_tokens=max(
             0,
             min(
                 2_000_000,
-                int(_env("VP_MODEL_MAX_CONTEXT_WINDOW_TOKENS", default="0") or "0"),
+                int(_env("VA_MODEL_MAX_CONTEXT_WINDOW_TOKENS", default="0") or "0"),
             ),
         ),
         context_auto_compact_token_limit=max(
             0,
             min(
                 2_000_000,
-                int(_env("VP_CONTEXT_AUTO_COMPACT_TOKEN_LIMIT", default="0") or "0"),
+                int(_env("VA_CONTEXT_AUTO_COMPACT_TOKEN_LIMIT", default="0") or "0"),
             ),
         ),
         context_auto_compact_ratio=max(
             0.1,
             min(
                 0.95,
-                float(_env("VP_CONTEXT_AUTO_COMPACT_RATIO", default="0.9") or "0.9"),
+                float(_env("VA_CONTEXT_AUTO_COMPACT_RATIO", default="0.9") or "0.9"),
             ),
         ),
         context_danger_compact_ratio=max(
             0.2,
             min(
                 0.99,
-                float(_env("VP_CONTEXT_DANGER_COMPACT_RATIO", default="0.95") or "0.95"),
+                float(_env("VA_CONTEXT_DANGER_COMPACT_RATIO", default="0.95") or "0.95"),
             ),
         ),
         context_history_soft_limit_tokens=max(
             1000,
             min(
                 1_000_000,
-                int(_env("VP_CONTEXT_HISTORY_SOFT_LIMIT_TOKENS", default="120000") or "120000"),
+                int(_env("VA_CONTEXT_HISTORY_SOFT_LIMIT_TOKENS", default="120000") or "120000"),
             ),
         ),
         context_exact_stale_sec=max(
             5,
             min(
                 3600,
-                int(_env("VP_CONTEXT_EXACT_STALE_SEC", default="60") or "60"),
+                int(_env("VA_CONTEXT_EXACT_STALE_SEC", default="60") or "60"),
             ),
         ),
         tool_output_token_limit=max(
             512,
             min(
                 100_000,
-                int(_env("VP_TOOL_OUTPUT_TOKEN_LIMIT", default="10000") or "10000"),
+                int(_env("VA_TOOL_OUTPUT_TOKEN_LIMIT", default="10000") or "10000"),
             ),
         ),
         max_upload_mb=max(
             1,
-            min(2048, int(_env("VP_MAX_UPLOAD_MB", default="200") or "200")),
+            min(2048, int(_env("VA_MAX_UPLOAD_MB", default="200") or "200")),
         ),
         default_locale=normalize_locale(
-            _env("VP_DEFAULT_LOCALE", default="ja-JP") or "ja-JP",
+            _env("VA_DEFAULT_LOCALE", default="ja-JP") or "ja-JP",
             fallback="ja-JP",
         ),
         tool_result_soft_trim_chars=max(2000, min(1_000_000, tool_result_soft_trim_chars)),

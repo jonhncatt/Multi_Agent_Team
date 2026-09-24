@@ -23,30 +23,30 @@ env_first() {
   return 1
 }
 
-LLM_PROVIDER_RAW="$(env_first VP_LLM_PROVIDER VP_MODEL_PROVIDER || printf 'openai')"
+LLM_PROVIDER_RAW="$(env_first VA_LLM_PROVIDER VA_MODEL_PROVIDER || printf 'openai')"
 LLM_PROVIDER="$(printf '%s' "$LLM_PROVIDER_RAW" | tr '[:upper:]' '[:lower:]')"
 case "$LLM_PROVIDER" in
   ""|default) LLM_PROVIDER="openai" ;;
   "openai-compatible") LLM_PROVIDER="openai_compatible" ;;
 esac
 
-APP_MODULE="$(env_first VP_APP_MODULE || printf 'app.main:app')"
-APP_PORT="$(env_first VP_APP_PORT || printf '8080')"
+APP_MODULE="$(env_first VA_APP_MODULE || printf 'app.main:app')"
+APP_PORT="$(env_first VA_APP_PORT || printf '8080')"
 
 EXPECTED_API_KEY_ENV=""
 case "$LLM_PROVIDER" in
-  openai) EXPECTED_API_KEY_ENV="VP_OPENAI_API_KEY" ;;
-  openai_compatible) EXPECTED_API_KEY_ENV="VP_OPENAI_COMPAT_API_KEY" ;;
-  openrouter) EXPECTED_API_KEY_ENV="VP_OPENROUTER_API_KEY" ;;
-  deepseek) EXPECTED_API_KEY_ENV="VP_DEEPSEEK_API_KEY" ;;
-  qwen) EXPECTED_API_KEY_ENV="VP_DASHSCOPE_API_KEY" ;;
-  moonshot) EXPECTED_API_KEY_ENV="VP_MOONSHOT_API_KEY" ;;
-  groq) EXPECTED_API_KEY_ENV="VP_GROQ_API_KEY" ;;
-  ollama) EXPECTED_API_KEY_ENV="VP_OLLAMA_API_KEY" ;;
-  *) EXPECTED_API_KEY_ENV="VP_LLM_API_KEY" ;;
+  openai) EXPECTED_API_KEY_ENV="VA_OPENAI_API_KEY" ;;
+  openai_compatible) EXPECTED_API_KEY_ENV="VA_OPENAI_COMPAT_API_KEY" ;;
+  openrouter) EXPECTED_API_KEY_ENV="VA_OPENROUTER_API_KEY" ;;
+  deepseek) EXPECTED_API_KEY_ENV="VA_DEEPSEEK_API_KEY" ;;
+  qwen) EXPECTED_API_KEY_ENV="VA_DASHSCOPE_API_KEY" ;;
+  moonshot) EXPECTED_API_KEY_ENV="VA_MOONSHOT_API_KEY" ;;
+  groq) EXPECTED_API_KEY_ENV="VA_GROQ_API_KEY" ;;
+  ollama) EXPECTED_API_KEY_ENV="VA_OLLAMA_API_KEY" ;;
+  *) EXPECTED_API_KEY_ENV="VA_LLM_API_KEY" ;;
 esac
 
-API_KEY_VALUE="$(env_first "$EXPECTED_API_KEY_ENV" VP_LLM_API_KEY || true)"
+API_KEY_VALUE="$(env_first "$EXPECTED_API_KEY_ENV" VA_LLM_API_KEY || true)"
 has_api_key=false
 
 if [ -n "${API_KEY_VALUE:-}" ]; then
@@ -57,7 +57,7 @@ if [ "$LLM_PROVIDER" = "ollama" ]; then
 fi
 
 if [ "$has_api_key" = false ]; then
-  echo "WARN: No API key found for provider=$LLM_PROVIDER. Expected env: $EXPECTED_API_KEY_ENV (or VP_LLM_API_KEY)." >&2
+  echo "WARN: No API key found for provider=$LLM_PROVIDER. Expected env: $EXPECTED_API_KEY_ENV (or VA_LLM_API_KEY)." >&2
 fi
 
 if [ -x "$ROOT_DIR/.venv/bin/python" ]; then

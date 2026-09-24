@@ -1,10 +1,10 @@
-# Vintage Programmer Windows 指南
+# Validation Assistant Windows 指南
 
-当前稳定版本：`3.1.7`。
+当前稳定版本：`1.0.0`。
 
 ## Stable Runtime
 
-当前分支使用全局 Built-in/Team Skill Registry。`save_skill` 只把可复用流程写入 Vintage Programmer 仓库的 `skills\team\<name>\SKILL.md`，不会写入当前业务项目；`skills\builtin` 保持只读。模型从 `[available_skills]` 获得启用 Skill 的路径，用普通 `read_file` 读取完整说明，并用普通 `exec_command` 执行附属脚本。
+当前分支使用全局 Built-in/Team Skill Registry。`save_skill` 只把可复用流程写入 Validation Assistant 仓库的 `skills\team\<name>\SKILL.md`，不会写入当前业务项目；`skills\builtin` 保持只读。模型从 `[available_skills]` 获得启用 Skill 的路径，用普通 `read_file` 读取完整说明，并用普通 `exec_command` 执行附属脚本。
 
 项目级 Python 模块命令建议优先使用 `.venv\Scripts\python.exe -m ...`；如果项目没有 `.venv`，再使用 `python -m ...`。如果当前环境没有 `python`，再使用 `py -m ...`。
 
@@ -19,17 +19,17 @@
 推荐默认设置：
 
 ```env
-VP_MAX_OUTPUT_TOKENS=16384
-VP_MAX_USER_REQUEST_CHARS=4000000
-VP_MAX_ATTACHMENT_CHARS=1000000
-VP_CONTEXT_AUTO_COMPACT_RATIO=0.9
-VP_CONTEXT_DANGER_COMPACT_RATIO=0.95
-VP_CONTEXT_HISTORY_SOFT_LIMIT_TOKENS=120000
-VP_CONTEXT_EXACT_STALE_SEC=60
+VA_MAX_OUTPUT_TOKENS=16384
+VA_MAX_USER_REQUEST_CHARS=4000000
+VA_MAX_ATTACHMENT_CHARS=1000000
+VA_CONTEXT_AUTO_COMPACT_RATIO=0.9
+VA_CONTEXT_DANGER_COMPACT_RATIO=0.95
+VA_CONTEXT_HISTORY_SOFT_LIMIT_TOKENS=120000
+VA_CONTEXT_EXACT_STALE_SEC=60
 ```
 
 这是单次模型调用的输出上限，不是整个任务的总上限。默认 16384 适合 GPT-5.4 这类大上下文模型的长材料问答；长任务仍应通过多轮 model/tool loop 完成，而不是依赖一次 128K 级别的超大回复。
-`VP_MAX_USER_REQUEST_CHARS` 是当前用户输入的安全字符上限；实际进入模型的内容还会按当前模型 context window 和输出预留做 token 预算裁剪。
+`VA_MAX_USER_REQUEST_CHARS` 是当前用户输入的安全字符上限；实际进入模型的内容还会按当前模型 context window 和输出预留做 token 预算裁剪。
 
 Context 状态采用轻量常驻显示：聊天主路径只用缓存或 quick 估算，不再每轮阻塞式精算 tokenizer。`/status` 读取当前 Thread 的状态并打开详情；`/compact` 手动整理旧历史。GPT-5.4 默认使用 272K 可用窗口、90% 自动整理线和 95% 危险线，真实 provider `input_tokens` 优先于本地估算。
 
@@ -37,7 +37,7 @@ Context 状态采用轻量常驻显示：聊天主路径只用缓存或 quick �
 
 ## Command Safety
 
-`exec_command` 仍然使用保守 allowlist。默认安全列表包含 `printf`、`dir` 和 Windows 程序定位命令 `where`，并且 `VP_ALLOWED_COMMANDS` 是完整覆盖，不是增量追加。默认命令执行仅限当前 project root，且会检查 `rg C:\Windows`、`git -C C:\Temp`、`python C:\Temp\a.py` 这类路径参数；`rm`、`chmod`、`chown`、`curl`、`wget`、`sudo`、`dd`、`kill`、`pkill`、`brew`、`pip`、`pip3` 等高风险命令仍保持阻止。
+`exec_command` 仍然使用保守 allowlist。默认安全列表包含 `printf`、`dir` 和 Windows 程序定位命令 `where`，并且 `VA_ALLOWED_COMMANDS` 是完整覆盖，不是增量追加。默认命令执行仅限当前 project root，且会检查 `rg C:\Windows`、`git -C C:\Temp`、`python C:\Temp\a.py` 这类路径参数；`rm`、`chmod`、`chown`、`curl`、`wget`、`sudo`、`dd`、`kill`、`pkill`、`brew`、`pip`、`pip3` 等高风险命令仍保持阻止。
 
 ## Permission Profiles
 
@@ -65,34 +65,34 @@ Copy-Item .env.example .env
 ## 独立桌面窗口
 
 仓库提供一个轻量 Windows launcher，用现有 FastAPI 服务打开 Chrome App Mode 独立窗口，
-不显示地址栏和标签栏，并使用独立的 VP 图标和 Chrome profile。它不修改 Agent Runtime、
+不显示地址栏和标签栏，并使用独立的 VA 图标和 Chrome profile。它不修改 Agent Runtime、
 工具执行、审批或上下文逻辑。
 
 从 GitHub Actions 的 **Windows Desktop Launcher** workflow 下载
-`vintage-programmer-windows-launcher`，把其中的 `VintageProgrammer.exe` 放在仓库根目录，
+`validation-assistant-windows-launcher`，把其中的 `ValidationAssistant.exe` 放在仓库根目录，
 完成上面的 `.venv` 与 `.env` 配置后即可双击启动。必须安装 Google Chrome；再次双击会优先
-唤醒已有的 VP 窗口，只有窗口已关闭时才会重新打开。右上角的 `Exit` 按钮会
+唤醒已有的 VA 窗口，只有窗口已关闭时才会重新打开。右上角的 `Exit` 按钮会
 停止任务和本地后台后完全退出。直接关闭 Chrome 窗口无法可靠通知 launcher，因此不会自动承担
 后台关闭职责。
 
 打包后的 launcher 只检查 EXE 所在目录，不会搜索父目录或其他仓库。该目录必须同时包含
 `app/main.py`、`requirements.txt` 和 `desktop/launcher.py`。如需显式绑定其他位置，设置
-`VP_DESKTOP_PROJECT_ROOT`。
+`VA_DESKTOP_PROJECT_ROOT`。
 
-Chrome App 需要新启动后台时会先立即显示 `Preparing…`，后台健康后在同一个窗口自动进入 VP；
+Chrome App 需要新启动后台时会先立即显示 `Preparing…`，后台健康后在同一个窗口自动进入 VA；
 随后出现的 `Loading workspace…` 只表示正在加载项目、Thread 和本地设置。如果后台已经运行，
-则直接进入 VP，不显示准备页。
+则直接进入 VA，不显示准备页。
 
-新版 launcher 会把 Chrome App 窗口和 `VintageProgrammer.exe` 绑定到同一个 Windows
-`AppUserModelID`，并把任务栏重新启动命令和高清图标指向 VP launcher。第一次升级到这个版本时，
-请先取消旧的 EXE 任务栏固定项，启动新版 VP，再右键正在运行的 VP 图标并选择固定到任务栏。
-这是一次性迁移；之后从该图标启动仍会先运行 `VintageProgrammer.exe`，由它准备后台并打开
+新版 launcher 会把 Chrome App 窗口和 `ValidationAssistant.exe` 绑定到同一个 Windows
+`AppUserModelID`，并把任务栏重新启动命令和高清图标指向 VA launcher。第一次升级到这个版本时，
+请先取消旧的 EXE 任务栏固定项，启动新版 VA，再右键正在运行的 VA 图标并选择固定到任务栏。
+这是一次性迁移；之后从该图标启动仍会先运行 `ValidationAssistant.exe`，由它准备后台并打开
 `chrome.exe --app=...`，运行窗口应继续停留在同一个任务栏图标下。
-EXE 内嵌图标使用兼容性更高的多尺寸 DIB 格式，运行中的 VP 窗口仍使用清晰的 PNG 图标；
+EXE 内嵌图标使用兼容性更高的多尺寸 DIB 格式，运行中的 VA 窗口仍使用清晰的 PNG 图标；
 Windows 构建会在发布前调用 Shell API 验证 EXE 的大、小图标都能正常提取。
 
 Chrome 桌面窗口使用 `app/data/desktop_browser_profile`；Agent 打开 Redmine 等网站所用的
-`VP_BROWSER_USER_DATA_DIR` 保持不变，两个 profile 不能指向同一目录。
+`VA_BROWSER_USER_DATA_DIR` 保持不变，两个 profile 不能指向同一目录。
 
 在 Mac 上可以用相同核心预览无地址栏的 App Mode 窗口：
 
@@ -107,31 +107,31 @@ Windows 本地构建和其他配置见 [desktop/windows/README.md](desktop/windo
 OpenAI 官方：
 
 ```env
-VP_LLM_PROVIDER=openai
-VP_OPENAI_API_KEY=你的_key
-VP_OPENAI_DEFAULT_MODEL=gpt-5.4
+VA_LLM_PROVIDER=openai
+VA_OPENAI_API_KEY=你的_key
+VA_OPENAI_DEFAULT_MODEL=gpt-5.4
 ```
 
-Vintage Programmer 现在只使用显式 provider API key 配置，不再从本机账号认证文件自动回退。
+Validation Assistant 现在只使用显式 provider API key 配置，不再从本机账号认证文件自动回退。
 
 OpenAI-compatible 网关：
 
 ```env
-VP_LLM_PROVIDER=openai_compatible
-VP_OPENAI_COMPAT_API_KEY=你的网关_key
-VP_OPENAI_COMPAT_BASE_URL=https://your-gateway.example.com/v1
-VP_OPENAI_COMPAT_CA_CERT_PATH=C:\certs\your-root-ca.pem
-VP_OPENAI_COMPAT_DEFAULT_MODEL=gpt-5.4
+VA_LLM_PROVIDER=openai_compatible
+VA_OPENAI_COMPAT_API_KEY=你的网关_key
+VA_OPENAI_COMPAT_BASE_URL=https://your-gateway.example.com/v1
+VA_OPENAI_COMPAT_CA_CERT_PATH=C:\certs\your-root-ca.pem
+VA_OPENAI_COMPAT_DEFAULT_MODEL=gpt-5.4
 ```
 
 OpenRouter：
 
 ```env
-VP_LLM_PROVIDER=openrouter
-VP_OPENROUTER_API_KEY=你的_openrouter_key
-VP_OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
-VP_OPENROUTER_DEFAULT_MODEL=google/gemma-4-31b-it:free
-VP_OPENROUTER_MODEL_FALLBACKS=nvidia/nemotron-3-super-120b-a12b:free
+VA_LLM_PROVIDER=openrouter
+VA_OPENROUTER_API_KEY=你的_openrouter_key
+VA_OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
+VA_OPENROUTER_DEFAULT_MODEL=google/gemma-4-31b-it:free
+VA_OPENROUTER_MODEL_FALLBACKS=nvidia/nemotron-3-super-120b-a12b:free
 ```
 
 如果你看到的是这个模型页面：
@@ -140,9 +140,9 @@ VP_OPENROUTER_MODEL_FALLBACKS=nvidia/nemotron-3-super-120b-a12b:free
 https://openrouter.ai/google/gemma-4-31b-it:free/api
 ```
 
-不要把它直接填进 `VP_OPENROUTER_BASE_URL`。正确写法是：
-- `VP_OPENROUTER_BASE_URL=https://openrouter.ai/api/v1`
-- `VP_OPENROUTER_DEFAULT_MODEL=google/gemma-4-31b-it:free`
+不要把它直接填进 `VA_OPENROUTER_BASE_URL`。正确写法是：
+- `VA_OPENROUTER_BASE_URL=https://openrouter.ai/api/v1`
+- `VA_OPENROUTER_DEFAULT_MODEL=google/gemma-4-31b-it:free`
 
 ## 接口说明
 

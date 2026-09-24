@@ -1,1 +1,1 @@
-"""Desktop launchers for Vintage Programmer."""
+"""Desktop launchers for Validation Assistant."""

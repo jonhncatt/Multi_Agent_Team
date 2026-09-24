@@ -9,7 +9,7 @@ def test_workstation_shell_mounts_exist() -> None:
     html = INDEX_HTML.read_text(encoding="utf-8")
     script = APP_JS.read_text(encoding="utf-8")
 
-    assert 'data-app="vintage-programmer"' in html
+    assert 'data-app="validation-assistant"' in html
     assert "/static/vendor/marked.umd.js" in html
     assert "/static/vendor/purify.min.js" in html
     required_tokens = [
@@ -71,7 +71,7 @@ def test_workstation_shell_behaviors_are_wired() -> None:
         "modelStorageKeyForProvider(",
         "health && health.provider_options",
         "handleChromeDesktopExit",
-        '"X-VP-Desktop-Token"',
+        '"X-VA-Desktop-Token"',
     ]
     for token in required_tokens:
         assert token in script, token

@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "profile_id": "validation-assistant",
+  "display_name": "Validation Assistant",
+  "description": "Shared repository guidance for developing and validating Validation Assistant."
+}

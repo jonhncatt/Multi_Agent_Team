@@ -19,7 +19,7 @@ from desktop.launcher import (
     chrome_preparation_url,
     desktop_instance_guard,
     ensure_desktop_control_token,
-    find_windows_vp_window,
+    find_windows_va_window,
     parse_window_size,
     parse_ui_scale,
     read_dotenv,
@@ -40,7 +40,7 @@ from desktop.launcher import (
 
 
 def _project_root(tmp_path: Path) -> Path:
-    root = tmp_path / "vintage-programmer"
+    root = tmp_path / "validation-assistant"
     (root / "app").mkdir(parents=True)
     (root / "app" / "main.py").write_text("", encoding="utf-8")
     (root / "desktop").mkdir(parents=True)
@@ -51,7 +51,7 @@ def _project_root(tmp_path: Path) -> Path:
 
 def test_resolve_project_root_uses_executable_directory_only(tmp_path: Path) -> None:
     root = _project_root(tmp_path)
-    executable = root / "VintageProgrammer.exe"
+    executable = root / "ValidationAssistant.exe"
 
     assert resolve_project_root(executable=executable) == root.resolve()
 
@@ -61,8 +61,8 @@ def test_resolve_project_root_does_not_walk_up_from_nested_directory(tmp_path: P
     nested = root / "dist"
     nested.mkdir()
 
-    with pytest.raises(LauncherError, match="must be in the Vintage Programmer repository root"):
-        resolve_project_root(executable=nested / "VintageProgrammer.exe")
+    with pytest.raises(LauncherError, match="must be in the Validation Assistant repository root"):
+        resolve_project_root(executable=nested / "ValidationAssistant.exe")
 
 
 def test_source_launcher_uses_current_directory_only(tmp_path: Path) -> None:
@@ -72,20 +72,20 @@ def test_source_launcher_uses_current_directory_only(tmp_path: Path) -> None:
 
 
 def test_resolve_project_root_rejects_unrelated_explicit_directory(tmp_path: Path) -> None:
-    with pytest.raises(LauncherError, match="not a Vintage Programmer checkout"):
+    with pytest.raises(LauncherError, match="not a Validation Assistant checkout"):
         resolve_project_root(tmp_path)
 
 
 def test_read_dotenv_matches_repository_style_values(tmp_path: Path) -> None:
     dotenv = tmp_path / ".env"
     dotenv.write_text(
-        "# comment\nVP_APP_PORT='8123'\nexport VP_APP_MODULE=sample.main:app # inline\n",
+        "# comment\nVA_APP_PORT='8123'\nexport VA_APP_MODULE=sample.main:app # inline\n",
         encoding="utf-8",
     )
 
     assert read_dotenv(dotenv) == {
-        "VP_APP_PORT": "8123",
-        "VP_APP_MODULE": "sample.main:app",
+        "VA_APP_PORT": "8123",
+        "VA_APP_MODULE": "sample.main:app",
     }
 
 
@@ -172,8 +172,8 @@ def test_desktop_and_agent_profiles_cannot_be_shared(tmp_path: Path, monkeypatch
     browser = tmp_path / "chrome.exe"
     browser.write_bytes(b"")
     (root / ".env").write_text(
-        "VP_BROWSER_USER_DATA_DIR=app/data/browser_profile\n"
-        "VP_DESKTOP_BROWSER_USER_DATA_DIR=app/data/browser_profile\n",
+        "VA_BROWSER_USER_DATA_DIR=app/data/browser_profile\n"
+        "VA_DESKTOP_BROWSER_USER_DATA_DIR=app/data/browser_profile\n",
         encoding="utf-8",
     )
     monkeypatch.setattr("desktop.launcher.sys.frozen", True, raising=False)
@@ -191,19 +191,19 @@ def test_launch_config_uses_same_dotenv_port_as_runtime(
     python.write_bytes(b"")
     browser = tmp_path / "chrome.exe"
     browser.write_bytes(b"")
-    (root / ".env").write_text("VP_APP_PORT=9123\n", encoding="utf-8")
+    (root / ".env").write_text("VA_APP_PORT=9123\n", encoding="utf-8")
     monkeypatch.setattr("desktop.launcher.sys.frozen", True, raising=False)
 
     config = build_launch_config(
         project_root=root,
         browser_path=str(browser),
-        env={"VP_APP_PORT": "8123"},
+        env={"VA_APP_PORT": "8123"},
     )
 
     assert config.port == 9123
     assert config.app_url == "http://127.0.0.1:9123"
-    assert config.desktop_url == "http://127.0.0.1:9123/?vp_desktop=1&vp_scale=0.8"
-    assert config.chrome_desktop_url == "http://127.0.0.1:9123/?vp_desktop=1&vp_scale=0.8&vp_host=chrome"
+    assert config.desktop_url == "http://127.0.0.1:9123/?va_desktop=1&va_scale=0.8"
+    assert config.chrome_desktop_url == "http://127.0.0.1:9123/?va_desktop=1&va_scale=0.8&va_host=chrome"
     assert config.browser_profile_dir == (
         root / "app" / "data" / "desktop_browser_profile"
     ).resolve()
@@ -233,7 +233,7 @@ def test_commands_keep_desktop_shell_outside_agent_runtime(tmp_path: Path) -> No
         "--no-access-log",
     ]
     browser_command = build_browser_command(config)
-    assert "--app=http://127.0.0.1:8181/?vp_desktop=1&vp_scale=0.8&vp_host=chrome" in browser_command
+    assert "--app=http://127.0.0.1:8181/?va_desktop=1&va_scale=0.8&va_host=chrome" in browser_command
     assert f"--user-data-dir={root / 'app' / 'data' / 'desktop_browser_profile'}" in browser_command
     assert f"--user-data-dir={root / 'app' / 'data' / 'browser_profile'}" not in browser_command
     assert "--start-maximized" not in browser_command
@@ -241,16 +241,16 @@ def test_commands_keep_desktop_shell_outside_agent_runtime(tmp_path: Path) -> No
     initial_command = build_browser_command(config, initialize_window=True)
     assert "--start-maximized" in initial_command
     assert "--window-size=1360,840" in initial_command
-    preparing_command = build_browser_command(config, app_url="file:///C:/vp/preparing.html")
-    assert "--app=file:///C:/vp/preparing.html" in preparing_command
+    preparing_command = build_browser_command(config, app_url="file:///C:/va/preparing.html")
+    assert "--app=file:///C:/va/preparing.html" in preparing_command
 
 
-def test_windows_taskbar_identity_relaunches_the_packaged_vp_launcher(tmp_path: Path) -> None:
+def test_windows_taskbar_identity_relaunches_the_packaged_va_launcher(tmp_path: Path) -> None:
     root = _project_root(tmp_path)
-    icon = root / "app" / "static" / "assets" / "vintage_programmer.ico"
+    icon = root / "app" / "static" / "assets" / "validation_assistant.ico"
     icon.parent.mkdir(parents=True)
     icon.write_bytes(b"ico")
-    launcher = root / "VintageProgrammer.exe"
+    launcher = root / "ValidationAssistant.exe"
     config = DesktopLaunchConfig(
         project_root=root,
         python_command=("python",),
@@ -304,13 +304,13 @@ def test_windows_taskbar_identity_binds_the_chrome_window_to_the_launcher(tmp_pa
 
 
 def test_windows_taskbar_window_finder_accepts_unread_badge_title() -> None:
-    handle = find_windows_vp_window(
+    handle = find_windows_va_window(
         APP_TITLE,
         platform_name="win32",
         exact_finder=lambda _title: 0,
         candidates_provider=lambda: [
-            (101, "Vintage Programmer documentation", "Notepad"),
-            (202, "(3) Vintage Programmer", "Chrome_WidgetWin_1"),
+            (101, "Validation Assistant documentation", "Notepad"),
+            (202, "(3) Validation Assistant", "Chrome_WidgetWin_1"),
         ],
     )
 
@@ -443,9 +443,9 @@ def test_windows_shell_accepts_taskbar_properties_on_a_real_window() -> None:
             handle,
             {
                 "app_id": WINDOWS_APP_USER_MODEL_ID,
-                "relaunch_command": r"C:\VP\VintageProgrammer.exe",
+                "relaunch_command": r"C:\VA\ValidationAssistant.exe",
                 "display_name": APP_TITLE,
-                "icon_resource": r"C:\VP\VintageProgrammer.exe,0",
+                "icon_resource": r"C:\VA\ValidationAssistant.exe,0",
             },
             diagnostics=diagnostics,
         ), diagnostics
@@ -483,7 +483,7 @@ def test_desktop_control_token_is_stable_and_never_exposed_in_diagnostics(tmp_pa
     assert len(first.desktop_control_token) >= 32
     assert second.desktop_control_token == first.desktop_control_token
     assert first.desktop_control_token_path.read_text(encoding="utf-8").strip() == first.desktop_control_token
-    assert first.chrome_desktop_url.endswith(f"#vp_control={first.desktop_control_token}")
+    assert first.chrome_desktop_url.endswith(f"#va_control={first.desktop_control_token}")
     assert first.desktop_control_token not in str(first.diagnostics())
 
 
@@ -570,7 +570,7 @@ def test_chrome_launch_opens_preparing_page_before_backend_is_ready(
 
 def test_chrome_preparing_page_uses_brand_icon_without_translation_prompt(tmp_path: Path) -> None:
     root = _project_root(tmp_path)
-    icon = root / "app" / "static" / "assets" / "vintage_programmer.png"
+    icon = root / "app" / "static" / "assets" / "validation_assistant.png"
     icon.parent.mkdir(parents=True)
     icon.write_bytes(b"png")
     favicon = icon.with_suffix(".ico")
@@ -591,7 +591,7 @@ def test_chrome_preparing_page_uses_brand_icon_without_translation_prompt(tmp_pa
     assert path == config.desktop_preparing_path
     assert chrome_preparation_url(config).startswith("file://")
     assert "Preparing…" in document
-    assert "Vintage Programmer will open automatically when ready." not in document
+    assert "Validation Assistant will open automatically when ready." not in document
     assert "正在启动本地工作区" not in document
     assert '<meta name="google" content="notranslate">' in document
     assert 'translate="no" class="notranslate"' in document
@@ -600,7 +600,7 @@ def test_chrome_preparing_page_uses_brand_icon_without_translation_prompt(tmp_pa
     assert favicon.resolve().as_uri() in document
     assert "Date.now()" in document
     assert config.desktop_preparing_state_path.read_text(encoding="utf-8") == (
-        "window.__VP_PREPARING_STATE__='preparing';"
+        "window.__VA_PREPARING_STATE__='preparing';"
     )
 
 
@@ -642,7 +642,7 @@ def test_chrome_preparing_page_reports_backend_start_failure(
         run_desktop(config)
 
     state_script = config.desktop_preparing_state_path.read_text(encoding="utf-8")
-    assert "vpPreparingFailed" in state_script
+    assert "vaPreparingFailed" in state_script
     assert "did not start" in state_script
 
 

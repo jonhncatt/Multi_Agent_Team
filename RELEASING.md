@@ -1,4 +1,4 @@
-# Releasing Vintage Programmer
+# Releasing Validation Assistant
 
 This repository uses a minimal release flow:
 
@@ -47,7 +47,7 @@ After CI is green and the PR is approved:
 gh pr merge --merge --delete-branch
 git checkout main
 git pull --ff-only origin main
-git tag -a v1.0.0 -m "Vintage Programmer v1.0.0"
+git tag -a v1.0.0 -m "Validation Assistant v1.0.0"
 git push origin main
 git push origin v1.0.0
 ```

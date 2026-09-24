@@ -1,4 +1,4 @@
-# Vintage Programmer Windows Desktop Launcher
+# Validation Assistant Windows Desktop Launcher
 
 This lightweight launcher starts the existing `app.main:app` FastAPI server and
 opens it in Google Chrome App Mode. It provides a standalone window without the
@@ -6,9 +6,9 @@ normal address bar or tabs while leaving Agent Runtime behavior unchanged.
 
 ## Use a CI build
 
-1. Download `vintage-programmer-windows-launcher` from the **Windows Desktop
+1. Download `validation-assistant-windows-launcher` from the **Windows Desktop
    Launcher** GitHub Actions workflow.
-2. Put `VintageProgrammer.exe` in the repository root next to `requirements.txt`.
+2. Put `ValidationAssistant.exe` in the repository root next to `requirements.txt`.
 3. Complete the normal Windows setup in `README.windows.md`, including `.venv`
    and `.env`.
 4. Make sure Google Chrome is installed, then double-click the executable.
@@ -21,25 +21,25 @@ cleared before the new launch is recorded. Launcher log backups are not kept.
 The packaged launcher checks only the directory containing the executable. It
 does not search parent directories or other checkouts. That directory must also
 contain `app/main.py`, `requirements.txt`, and `desktop/launcher.py`. Use
-`VP_DESKTOP_PROJECT_ROOT` only when intentionally binding an explicit location.
+`VA_DESKTOP_PROJECT_ROOT` only when intentionally binding an explicit location.
 
 When a new backend is required, Chrome opens immediately on a local `Preparing…`
-page and moves to Vintage Programmer when `/api/health` is ready. The later
+page and moves to Validation Assistant when `/api/health` is ready. The later
 `Loading workspace…` state covers only project, Thread, and local-setting loading.
 
-Launching the executable again first restores an existing Vintage Programmer
+Launching the executable again first restores an existing Validation Assistant
 window. If the Chrome window was closed while the backend remained active, a new
 window is opened against that same backend instead.
 
 The launcher assigns the Chrome App window and the launcher a shared Windows
 AppUserModelID. On the first build containing this support, unpin the old direct
-EXE taskbar item, launch the new `VintageProgrammer.exe`, then pin the running VP
-window. That one-time re-pin stores the VP relaunch command and high-resolution
+EXE taskbar item, launch the new `ValidationAssistant.exe`, then pin the running VA
+window. That one-time re-pin stores the VA relaunch command and high-resolution
 icon; later launches still go through the EXE so the backend is prepared before
 Chrome App Mode opens.
 
 The executable embeds a conservative multi-size DIB icon for Windows Shell
-compatibility, while the running VP window continues to use the sharper PNG-based
+compatibility, while the running VA window continues to use the sharper PNG-based
 icon. The Windows build verifies that Shell can extract both large and small EXE
 icons before the launcher is published.
 
@@ -49,7 +49,7 @@ report its lifecycle to the launcher, so closing with `X` leaves the backend
 running. Starting the executable again reopens the window in that case.
 
 After a manual repository update succeeds, the desktop window offers **Close**
-and **Restart VP now**. Restarting keeps the current window open, replaces the
+and **Restart VA now**. Restarting keeps the current window open, replaces the
 local backend without opening a console window, shows a Preparing-style waiting
 screen, and reloads the page automatically when the new process is ready.
 
@@ -59,7 +59,7 @@ screen, and reloads the page automatically when the new process is ready.
 desktop\windows\build.ps1
 ```
 
-The executable is written to `dist\VintageProgrammer.exe`.
+The executable is written to `dist\ValidationAssistant.exe`.
 Copy it to the repository root before launching it; the build output directory is
 not treated as the application root.
 
@@ -74,20 +74,20 @@ The same Chrome App Mode launcher can be previewed on macOS:
 ## Configuration
 
 The desktop window uses a Chrome profile separate from the Agent browser. Do not
-point `VP_DESKTOP_BROWSER_USER_DATA_DIR` at `VP_BROWSER_USER_DATA_DIR`.
+point `VA_DESKTOP_BROWSER_USER_DATA_DIR` at `VA_BROWSER_USER_DATA_DIR`.
 
 ```env
-VP_DESKTOP_SHELL=chrome
-VP_DESKTOP_BROWSER_PATH=
-VP_DESKTOP_BROWSER_USER_DATA_DIR=app/data/desktop_browser_profile
-VP_DESKTOP_STARTUP_TIMEOUT_SEC=45
-VP_DESKTOP_INITIAL_WINDOW_SIZE=1360,840
-VP_DESKTOP_UI_SCALE=0.8
+VA_DESKTOP_SHELL=chrome
+VA_DESKTOP_BROWSER_PATH=
+VA_DESKTOP_BROWSER_USER_DATA_DIR=app/data/desktop_browser_profile
+VA_DESKTOP_STARTUP_TIMEOUT_SEC=45
+VA_DESKTOP_INITIAL_WINDOW_SIZE=1360,840
+VA_DESKTOP_UI_SCALE=0.8
 ```
 
-`VP_DESKTOP_SHELL=auto` remains accepted for compatibility and behaves exactly
+`VA_DESKTOP_SHELL=auto` remains accepted for compatibility and behaves exactly
 like `chrome`. Other values are rejected. Chrome is auto-detected when
-`VP_DESKTOP_BROWSER_PATH` is empty.
+`VA_DESKTOP_BROWSER_PATH` is empty.
 
 The first window opens maximized and Chrome remembers later resizing. The
 desktop-only UI scale defaults to 80%; set it between `0.65` and `1.25` for a

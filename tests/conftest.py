@@ -14,37 +14,37 @@ if root_text not in sys.path:
     sys.path.insert(0, root_text)
 
 
-_AMBIENT_VP_ENV: dict[str, str] = {}
+_AMBIENT_VA_ENV: dict[str, str] = {}
 
 
 def pytest_sessionstart(session: pytest.Session) -> None:
-    """Sanitize VP settings before test modules import application globals."""
+    """Sanitize VA settings before test modules import application globals."""
 
     _ = session
-    _AMBIENT_VP_ENV.clear()
-    _AMBIENT_VP_ENV.update(
-        {key: value for key, value in os.environ.items() if key.startswith("VP_")}
+    _AMBIENT_VA_ENV.clear()
+    _AMBIENT_VA_ENV.update(
+        {key: value for key, value in os.environ.items() if key.startswith("VA_")}
     )
-    for key in list(_AMBIENT_VP_ENV):
+    for key in list(_AMBIENT_VA_ENV):
         os.environ.pop(key, None)
-    os.environ["VP_SKIP_DOTENV"] = "1"
+    os.environ["VA_SKIP_DOTENV"] = "1"
 
 
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     """Restore the invoking shell's settings inside the pytest process."""
 
     _ = (session, exitstatus)
-    for key in [item for item in os.environ if item.startswith("VP_")]:
+    for key in [item for item in os.environ if item.startswith("VA_")]:
         os.environ.pop(key, None)
-    os.environ.update(_AMBIENT_VP_ENV)
+    os.environ.update(_AMBIENT_VA_ENV)
 
 
 @pytest.fixture(autouse=True)
-def _isolate_vp_environment(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
-    """Keep developer and company VP settings out of deterministic tests."""
+def _isolate_va_environment(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Keep developer and company VA settings out of deterministic tests."""
 
     for key in list(os.environ):
-        if key.startswith("VP_"):
+        if key.startswith("VA_"):
             monkeypatch.delenv(key, raising=False)
-    monkeypatch.setenv("VP_SKIP_DOTENV", "1")
+    monkeypatch.setenv("VA_SKIP_DOTENV", "1")
     yield

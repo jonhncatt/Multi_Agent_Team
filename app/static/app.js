@@ -3,7 +3,7 @@ const ReactDomRuntime = window.ReactDOM;
 const htmRuntime = window.htm;
 const markedRuntime = window.marked;
 const DOMPurifyRuntime = window.DOMPurify;
-const I18nRuntime = window.VP_I18N;
+const I18nRuntime = window.VA_I18N;
 
 if (!ReactRuntime || !ReactDomRuntime || !htmRuntime || !markedRuntime || !DOMPurifyRuntime || !I18nRuntime) {
   const root = document.getElementById("root");
@@ -28,11 +28,11 @@ if (typeof markedRuntime.setOptions === "function") {
   });
 }
 
-const SESSION_STORAGE_KEY = "vintage_programmer.session_id";
-const PROJECT_STORAGE_KEY = "vintage_programmer.project_id";
-const PROVIDER_STORAGE_KEY = "vintage_programmer.last_provider";
-const MODEL_STORAGE_KEY = "vintage_programmer.last_model";
-const THREAD_MODEL_STORAGE_KEY = "vintage_programmer.thread_models.v1";
+const SESSION_STORAGE_KEY = "validation_assistant.session_id";
+const PROJECT_STORAGE_KEY = "validation_assistant.project_id";
+const PROVIDER_STORAGE_KEY = "validation_assistant.last_provider";
+const MODEL_STORAGE_KEY = "validation_assistant.last_model";
+const THREAD_MODEL_STORAGE_KEY = "validation_assistant.thread_models.v1";
 
 function createThreadSettingsStore(storage, initialSettings) {
   const scopedKeys = ["model", "provider", "reasoning_effort", "service_tier"];
@@ -84,13 +84,13 @@ function useThreadChatSettings(threadId, initialize) {
   const update = (value) => { if (store.update(threadId, value)) redraw((revision) => revision + 1); };
   return [settings, update, store];
 }
-const LOCALE_STORAGE_KEY = "vintage_programmer.locale";
-const THEME_COLOR_STORAGE_KEY = "vintage_programmer.theme_color";
-const REASONING_EFFORT_STORAGE_KEY = "vintage_programmer.reasoning_effort";
-const SERVICE_TIER_STORAGE_KEY = "vintage_programmer.service_tier";
-const REASONING_MODEL_STORAGE_KEY = "vintage_programmer.reasoning_model";
+const LOCALE_STORAGE_KEY = "validation_assistant.locale";
+const THEME_COLOR_STORAGE_KEY = "validation_assistant.theme_color";
+const REASONING_EFFORT_STORAGE_KEY = "validation_assistant.reasoning_effort";
+const SERVICE_TIER_STORAGE_KEY = "validation_assistant.service_tier";
+const REASONING_MODEL_STORAGE_KEY = "validation_assistant.reasoning_model";
 const DEFAULT_REASONING_MODEL = "gpt-5.6-sol";
-const PROJECT_LIST_HEIGHT_STORAGE_KEY = "vintage_programmer.project_list_height";
+const PROJECT_LIST_HEIGHT_STORAGE_KEY = "validation_assistant.project_list_height";
 const DEFAULT_PROJECT_LIST_HEIGHT = 140;
 const MIN_PROJECT_LIST_HEIGHT = 72;
 const MAX_PROJECT_LIST_HEIGHT = 720;
@@ -102,8 +102,8 @@ const RUNTIME_STATUS_IDLE_INTERVAL_MS = 30_000;
 const ACTIVITY_CLOCK_INTERVAL_MS = 1_000;
 const APP_UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1_000;
 const APP_UPDATE_INITIAL_DELAY_MS = 30 * 1_000;
-const DESKTOP_HOST = String(window.__VP_DESKTOP_HOST__ || "").trim().toLowerCase();
-const DESKTOP_CONTROL_TOKEN = String(window.__VP_DESKTOP_CONTROL_TOKEN__ || "").trim();
+const DESKTOP_HOST = String(window.__VA_DESKTOP_HOST__ || "").trim().toLowerCase();
+const DESKTOP_CONTROL_TOKEN = String(window.__VA_DESKTOP_CONTROL_TOKEN__ || "").trim();
 const IS_CHROME_DESKTOP_APP = DESKTOP_HOST === "chrome" && Boolean(DESKTOP_CONTROL_TOKEN);
 const PROJECTS_REFRESH_STALE_MS = 60_000;
 const MODEL_WAIT_SLOW_HINT_MS = 8_000;
@@ -811,7 +811,7 @@ function renderMessageHtml(text, messageId = "") {
     template.innerHTML = htmlValue;
     for (const link of template.content.querySelectorAll("a[href]")) {
       const href = String(link.getAttribute("href") || "").trim();
-      // Keep same-page anchors usable. Every other answer link leaves the VP
+      // Keep same-page anchors usable. Every other answer link leaves the VA
       // window intact, including relative document/download links.
       if (!href || href.startsWith("#")) continue;
       link.setAttribute("target", "_blank");
@@ -5971,7 +5971,7 @@ function App() {
       setDesktopExitState("exiting");
       await fetchJson("/api/desktop/exit", {
         method: "POST",
-        headers: { "X-VP-Desktop-Token": DESKTOP_CONTROL_TOKEN },
+        headers: { "X-VA-Desktop-Token": DESKTOP_CONTROL_TOKEN },
       });
       setDesktopExitState("stopped");
       window.setTimeout(() => window.close(), 80);
@@ -6221,7 +6221,7 @@ function App() {
     try {
       const data = await fetchJson("/api/desktop/restart", {
         method: "POST",
-        headers: { "X-VP-Desktop-Token": DESKTOP_CONTROL_TOKEN },
+        headers: { "X-VA-Desktop-Token": DESKTOP_CONTROL_TOKEN },
       });
       const previousProcessId = Number((data && data.process_id) || 0);
       await waitForRestartedDesktop(previousProcessId);
@@ -9159,7 +9159,7 @@ function App() {
         thread_id: latestThreadId || sid,
         turn_id: String(latestRunSnapshot.turn_id || ""),
         run_id: String(((completedTurnPayload || {}).id) || activeRunId || ""),
-        agent_id: "vintage_programmer",
+        agent_id: "validation_assistant",
         effective_model: String(
           runSettings.model ||
           (runProviderProfile && runProviderProfile.default_model) ||
@@ -9782,8 +9782,8 @@ function App() {
         ...(finalPayload.inspector || {}).session,
         ...{
           agent: ((finalPayload.inspector || {}).agent) || sessionAgentInfo || {},
-          agent_id: finalPayload.agent_id || "vintage_programmer",
-          agent_title: String((((finalPayload.inspector || {}).agent) || {}).title || sessionRuntimeState.agent_title || "Vintage Programmer"),
+          agent_id: finalPayload.agent_id || "validation_assistant",
+          agent_title: String((((finalPayload.inspector || {}).agent) || {}).title || sessionRuntimeState.agent_title || "Validation Assistant"),
           goal: String((((finalPayload.inspector || {}).run_state || {}).goal) || messageText),
           current_goal: String((((finalPayload.inspector || {}).run_state || {}).goal) || messageText),
           permission_profile: normalizePermissionProfile(finalPayload.permission_profile || (((finalPayload.inspector || {}).run_state || {}).permission_profile) || runSettings.permission_profile || "auto"),
@@ -11730,9 +11730,9 @@ function App() {
         ref=${threadRailRef}
       >
         <div className="rail-brand">
-          <img className="brand-mark" src="/static/assets/vintage_programmer.png" alt="" aria-hidden="true" />
+          <img className="brand-mark" src="/static/assets/validation_assistant.png" alt="" aria-hidden="true" />
           <div>
-            <div className="brand-title">Vintage Programmer</div>
+            <div className="brand-title">Validation Assistant</div>
             <div className="brand-subline">
               <div className="brand-sub">${workspaceLabel || t("brand.no_project_selected")}</div>
               ${displayVersion ? html`<span className="brand-version-badge">${displayVersion}</span>` : null}
@@ -11970,7 +11970,7 @@ function App() {
             <div className="head-stack">
               <div className="main-head-title">${headTitle}</div>
               <div className="main-head-sub" title=${currentProjectRoot || workspaceLabel || ""}>
-                ${agentInfo.title || sessionRuntimeState.agent_title || "Vintage Programmer"}
+                ${agentInfo.title || sessionRuntimeState.agent_title || "Validation Assistant"}
                 ${headBreadcrumb ? ` · ${headBreadcrumb}` : ""}
               </div>
             </div>
@@ -12113,7 +12113,7 @@ function App() {
                     ${t("labels.current_project")}
                     <strong>${workspaceLabel || t("labels.unselected")}</strong>
                     ${currentProjectRoot ? ` · ${compactPath(currentProjectRoot)}` : ""}
-                    ${t("empty.prompt_body")}<strong>vintage_programmer</strong>${t("empty.prompt_suffix")}
+                    ${t("empty.prompt_body")}<strong>validation_assistant</strong>${t("empty.prompt_suffix")}
                   </p>
                   <div className="starter-list">${starterPromptChips(uiLocale, setDraft, handleSend)}</div>
                 </section>
@@ -13745,9 +13745,9 @@ function App() {
       ? html`
           <main className="app-boot-screen app-boot-screen-overlay" role="status" aria-live="polite" aria-label=${bootLoadingText}>
             <div className="app-boot-card">
-              <img className="app-boot-mark" src="/static/assets/vintage_programmer.png" alt="" aria-hidden="true" />
+              <img className="app-boot-mark" src="/static/assets/validation_assistant.png" alt="" aria-hidden="true" />
               <div className="app-boot-copy">
-                <div className="app-boot-title">Vintage Programmer</div>
+                <div className="app-boot-title">Validation Assistant</div>
                 <div className="app-boot-status">
                   <span className="app-boot-ring" aria-hidden="true"></span>
                   <span>${bootLoadingText}</span>
@@ -13766,9 +13766,9 @@ function App() {
             aria-label=${t("update.restarting_message")}
           >
             <div className="app-boot-card">
-              <img className="app-boot-mark" src="/static/assets/vintage_programmer.png" alt="" aria-hidden="true" />
+              <img className="app-boot-mark" src="/static/assets/validation_assistant.png" alt="" aria-hidden="true" />
               <div className="app-boot-copy">
-                <div className="app-boot-title">Vintage Programmer</div>
+                <div className="app-boot-title">Validation Assistant</div>
                 <div className="app-boot-status">
                   <span className="app-boot-ring" aria-hidden="true"></span>
                   <span>${t("update.restarting_message")}</span>
@@ -13782,7 +13782,7 @@ function App() {
       ? html`
           <div className="desktop-exit-overlay" role="status" aria-live="polite">
             <div className="desktop-exit-card">
-              <img src="/static/assets/vintage_programmer.png" alt="" aria-hidden="true" />
+              <img src="/static/assets/validation_assistant.png" alt="" aria-hidden="true" />
               <strong>${t("desktop.exit.stopped")}</strong>
               <span>${t("desktop.exit.close_hint")}</span>
               <button className="solid-btn" type="button" onClick=${() => window.close()}>${t("desktop.exit.close_window")}</button>

@@ -5,7 +5,7 @@ from pathlib import Path
 import re
 
 
-team_root = Path(os.environ["VP_EVAL_TEAM_SKILLS_ROOT"])
+team_root = Path(os.environ["VA_EVAL_TEAM_SKILLS_ROOT"])
 skill_path = team_root / "translation-maintenance" / "SKILL.md"
 text = skill_path.read_text(encoding="utf-8")
 

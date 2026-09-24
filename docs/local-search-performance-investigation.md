@@ -90,17 +90,17 @@ Warm filename wall time versus ab118e63, milliseconds (median / P95 / total):
 | Files | Query | Baseline | Current |
 | --- | --- | --- | --- |
 | 281 | v | 5.063 / 5.137 / 101.430 | 3.822 / 3.898 / 76.641 |
-| 281 | vp | 5.144 / 5.208 / 103.009 | 3.924 / 4.018 / 78.999 |
-| 281 | vpr | 5.292 / 5.332 / 106.026 | 4.027 / 4.057 / 80.613 |
-| 281 | vprb | 0.889 / 0.897 / 17.780 | 0.787 / 0.800 / 15.766 |
+| 281 | va | 5.144 / 5.208 / 103.009 | 3.924 / 4.018 / 78.999 |
+| 281 | var | 5.292 / 5.332 / 106.026 | 4.027 / 4.057 / 80.613 |
+| 281 | varb | 0.889 / 0.897 / 17.780 | 0.787 / 0.800 / 15.766 |
 | 10,003 | v | 27.001 / 27.131 / 540.131 | 25.761 / 25.823 / 514.922 |
-| 10,003 | vp | 48.509 / 52.317 / 986.188 | 47.318 / 50.054 / 955.839 |
-| 10,003 | vpr | 73.811 / 116.244 / 1617.710 | 73.371 / 117.784 / 1660.192 |
-| 10,003 | vprb | 87.802 / 91.967 / 1780.273 | 86.557 / 90.297 / 1752.764 |
+| 10,003 | va | 48.509 / 52.317 / 986.188 | 47.318 / 50.054 / 955.839 |
+| 10,003 | var | 73.811 / 116.244 / 1617.710 | 73.371 / 117.784 / 1660.192 |
+| 10,003 | varb | 87.802 / 91.967 / 1780.273 | 86.557 / 90.297 / 1752.764 |
 
 All warm filename comparisons have complete snapshots and equal exact hits.
-Small-corpus v/vp/vpr improved around 24%; large-corpus improvements are small,
-and vpr's tail/total worsened. Scanning observations (baseline/current):
+Small-corpus v/va/var improved around 24%; large-corpus improvements are small,
+and var's tail/total worsened. Scanning observations (baseline/current):
 281 files 12.754/12.556 ms; 10,003 files 155.379/141.354 ms. These are single
 observations, not repeated cold-scan conclusions.
 
@@ -133,7 +133,7 @@ direct-rg call, and format already-resolved result paths without resolving those
 paths/display roots repeatedly. Filename results still pass the permission
 resolver individually on every call, including cache hits. For warm `v` over
 281 files, instrumented path time was 4.168 → 3.319 ms while fuzzy scoring stayed
-0.335 → 0.337 ms. At 10,003 files, scoring dominates (vprb about 82.5 ms under
+0.335 → 0.337 ms. At 10,003 files, scoring dominates (varb about 82.5 ms under
 instrumentation); this patch does not rewrite the matcher.
 
 The Windows report could locate a different dominant phase. Its new raw profile

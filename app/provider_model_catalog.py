@@ -128,7 +128,7 @@ def fetch_provider_models(config: AppConfig, *, timeout_sec: float = 20.0) -> An
     headers = {
         "Accept": "application/json",
         "Authorization": f"Bearer {str(auth.api_key or '')}",
-        "User-Agent": "VintageProgrammer/model-catalog",
+        "User-Agent": "ValidationAssistant/model-catalog",
     }
     if str(config.llm_provider or "").strip().lower() == "openai_compatible":
         headers["api-key"] = str(auth.api_key or "")

@@ -1,6 +1,6 @@
-# Vintage Programmer
+# Validation Assistant
 
-![Version](https://img.shields.io/badge/version-3.1.7-blue)
+![Version](https://img.shields.io/badge/version-1.0.0-blue)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Backend](https://img.shields.io/badge/backend-FastAPI-green)
 ![Browser](https://img.shields.io/badge/browser-Playwright-green)
@@ -9,36 +9,36 @@
 
 可観測な activity tracing を備えた、ローカルファーストの AI Agent ワークベンチです。editable agent specs と local skills、そして harness-validated execution を一体で扱えます。
 
-**Vintage Programmer** は、最終回答だけを返す通常のチャット UI ではありません。  
+**Validation Assistant** は、最終回答だけを返す通常のチャット UI ではありません。
 1 回の turn の中で Agent が何を提案し、runtime が何を検証し、どの tool が実行され、どのような観測結果が返ったのかを見えるようにすることを目的としています。
 **ユーザー要求 -> モデル行動 -> harness 検証 -> tool 実行 -> 観測結果 -> 最終回答**
 
 [中文ホーム](README.md) · [中文 README](README.zh-CN.md) · [English README](README.en.md) · [Windows Guide](README.windows.md) · [ドキュメント索引](docs/README.md) · [Release Flow](RELEASING.md)
 
-現在の安定版: `3.1.7`
+現在の安定版: `1.0.0`
 
 ## Stable Runtime
 
 現在の branch は、読み取り専用の Built-in Skills と Git で共同管理する Team Skills を持つグローバル Skill Registry を使用します。runtime は軽量な `[available_skills]` metadata と有効な各 `SKILL.md` のパスを渡し、モデルは通常の `read_file` で完全な説明を読み、通常の `exec_command` で同梱スクリプトを実行します。
 
-`save_skill` は再利用可能な手順を Vintage Programmer repository の `skills/team/<name>/SKILL.md` にだけ保存し、現在選択中の業務 project には書き込みません。Built-in の `create-team-skill` が Team Skill 作成を案内し、Built-in Skills 自体は読み取り専用です。
+`save_skill` は再利用可能な手順を Validation Assistant repository の `skills/team/<name>/SKILL.md` にだけ保存し、現在選択中の業務 project には書き込みません。Built-in の `create-team-skill` が Team Skill 作成を案内し、Built-in Skills 自体は読み取り専用です。
 
 ## Max Output Tokens
 
 推奨デフォルト:
 
 ```env
-VP_MAX_OUTPUT_TOKENS=16384
-VP_MAX_USER_REQUEST_CHARS=4000000
-VP_MAX_ATTACHMENT_CHARS=1000000
-VP_CONTEXT_AUTO_COMPACT_RATIO=0.9
-VP_CONTEXT_DANGER_COMPACT_RATIO=0.95
-VP_CONTEXT_HISTORY_SOFT_LIMIT_TOKENS=120000
-VP_CONTEXT_EXACT_STALE_SEC=60
+VA_MAX_OUTPUT_TOKENS=16384
+VA_MAX_USER_REQUEST_CHARS=4000000
+VA_MAX_ATTACHMENT_CHARS=1000000
+VA_CONTEXT_AUTO_COMPACT_RATIO=0.9
+VA_CONTEXT_DANGER_COMPACT_RATIO=0.95
+VA_CONTEXT_HISTORY_SOFT_LIMIT_TOKENS=120000
+VA_CONTEXT_EXACT_STALE_SEC=60
 ```
 
 これは 1 回のモデル呼び出しごとの出力上限であり、タスク全体の上限ではありません。16384 のデフォルトは GPT-5.4 のような大きな context window を持つモデルでの長文資料 Q&A に向いていますが、長いタスクは 128K 級の巨大な単発応答ではなく、複数回の model/tool loop で進めます。
-`VP_MAX_USER_REQUEST_CHARS` は現在のユーザー入力に対する安全用の文字数上限です。実際にモデルへ入る内容は、現在のモデルの context window と出力予約分に基づく token budget でさらに調整されます。
+`VA_MAX_USER_REQUEST_CHARS` は現在のユーザー入力に対する安全用の文字数上限です。実際にモデルへ入る内容は、現在のモデルの context window と出力予約分に基づく token budget でさらに調整されます。
 
 Context 状態は cached/quick 見積もりを使い、チャットの通常経路を full tokenizer 計算でブロックしません。`/status` は現在の Thread の context 詳細を表示し、`/compact` は古い履歴を手動で整理します。GPT-5.4 は既定で 272K の利用可能 window、90% の自動整理ライン、95% の危険ラインを使用し、provider の実測 `input_tokens` をローカル推定より優先します。
 
@@ -52,7 +52,7 @@ Context 状態は cached/quick 見積もりを使い、チャットの通常経�
 
 ## Command Safety
 
-`exec_command` は引き続き保守的な allowlist を使い、`VP_ALLOWED_COMMANDS` は追記ではなく完全上書きです。コマンド実行は現在の権限と path 境界に従い、`rg /etc`、`git -C /tmp`、`python /tmp/a.py` のような path 引数も検査されます。具体的な `git push` は shell を許可するすべての権限プロファイルで毎回一度限りの承認が必要で、承認は正確なコマンド、repository、remote URL fingerprint、branch、HEAD に結び付けられます。Skill やファイル内のコマンド文字列は実行権限ではなく、危険な削除や download-to-shell は引き続きブロックされます。
+`exec_command` は引き続き保守的な allowlist を使い、`VA_ALLOWED_COMMANDS` は追記ではなく完全上書きです。コマンド実行は現在の権限と path 境界に従い、`rg /etc`、`git -C /tmp`、`python /tmp/a.py` のような path 引数も検査されます。具体的な `git push` は shell を許可するすべての権限プロファイルで毎回一度限りの承認が必要で、承認は正確なコマンド、repository、remote URL fingerprint、branch、HEAD に結び付けられます。Skill やファイル内のコマンド文字列は実行権限ではなく、危険な削除や download-to-shell は引き続きブロックされます。
 
 ## Session = Thread
 
@@ -64,7 +64,7 @@ Context 状態は cached/quick 見積もりを使い、チャットの通常経�
 
 ## これは何か
 
-Vintage Programmer は、既定のメイン agent として `vintage_programmer` を持つローカル AI Agent ワークベンチです。
+Validation Assistant は、既定のメイン agent として `validation_assistant` を持つローカル AI Agent ワークベンチです。
 
 このリポジトリには、次の要素がまとまっています。
 
@@ -80,7 +80,7 @@ Vintage Programmer は、既定のメイン agent として `vintage_programmer`
 ## なぜ作るのか
 
 多くの AI チャット製品は最終回答を重視します。
-Vintage Programmer は、その回答に至る execution path を重視します。
+Validation Assistant は、その回答に至る execution path を重視します。
 
 次のようなことを確認したい場面向けです。
 
@@ -111,7 +111,7 @@ Vintage Programmer は、その回答に至る execution path を重視します
 ## 通常の Chat UI との違い
 
 通常の Chat UI は、主に最終回答だけを見せます。
-Vintage Programmer は、その途中の execution path も見せます。
+Validation Assistant は、その途中の execution path も見せます。
 
 たとえば次の情報を追えます。
 
@@ -176,40 +176,40 @@ Windows 向けの推奨手順は [README.windows.md](README.windows.md) を参�
 ### OpenAI 公式
 
 ```env
-VP_LLM_PROVIDER=openai
-VP_OPENAI_API_KEY=your_key
-VP_OPENAI_DEFAULT_MODEL=gpt-5.4
+VA_LLM_PROVIDER=openai
+VA_OPENAI_API_KEY=your_key
+VA_OPENAI_DEFAULT_MODEL=gpt-5.4
 ```
 
-Vintage Programmer は明示的な provider API key 設定のみを使います。ローカルのアカウント認証ファイルへの自動フォールバックは行いません。
+Validation Assistant は明示的な provider API key 設定のみを使います。ローカルのアカウント認証ファイルへの自動フォールバックは行いません。
 
 ### OpenAI-compatible gateway
 
 ```env
-VP_LLM_PROVIDER=openai_compatible
-VP_OPENAI_COMPAT_API_KEY=your_gateway_key
-VP_OPENAI_COMPAT_BASE_URL=https://your-gateway.example.com/v1
-VP_OPENAI_COMPAT_CA_CERT_PATH=/absolute/path/to/your-root-ca.pem
-VP_OPENAI_COMPAT_DEFAULT_MODEL=gpt-5.4
+VA_LLM_PROVIDER=openai_compatible
+VA_OPENAI_COMPAT_API_KEY=your_gateway_key
+VA_OPENAI_COMPAT_BASE_URL=https://your-gateway.example.com/v1
+VA_OPENAI_COMPAT_CA_CERT_PATH=/absolute/path/to/your-root-ca.pem
+VA_OPENAI_COMPAT_DEFAULT_MODEL=gpt-5.4
 ```
 
 ### OpenRouter
 
 ```env
-VP_LLM_PROVIDER=openrouter
-VP_OPENROUTER_API_KEY=your_openrouter_key
-VP_OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
-VP_OPENROUTER_DEFAULT_MODEL=google/gemma-4-31b-it:free
-VP_OPENROUTER_MODEL_FALLBACKS=nvidia/nemotron-3-super-120b-a12b:free
+VA_LLM_PROVIDER=openrouter
+VA_OPENROUTER_API_KEY=your_openrouter_key
+VA_OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
+VA_OPENROUTER_DEFAULT_MODEL=google/gemma-4-31b-it:free
+VA_OPENROUTER_MODEL_FALLBACKS=nvidia/nemotron-3-super-120b-a12b:free
 ```
 
 ### ローカル Ollama
 
 ```env
-VP_LLM_PROVIDER=ollama
-VP_OLLAMA_BASE_URL=http://127.0.0.1:11434/v1
-VP_OLLAMA_API_KEY=ollama
-VP_OLLAMA_DEFAULT_MODEL=qwen2.5-coder:7b
+VA_LLM_PROVIDER=ollama
+VA_OLLAMA_BASE_URL=http://127.0.0.1:11434/v1
+VA_OLLAMA_API_KEY=ollama
+VA_OLLAMA_DEFAULT_MODEL=qwen2.5-coder:7b
 ```
 
 その他のオプションは [.env.example](.env.example) を参照してください。
@@ -230,12 +230,12 @@ VP_OLLAMA_DEFAULT_MODEL=qwen2.5-coder:7b
 
 ## Agent Specs
 
-既定のメイン agent は `vintage_programmer` です。
+既定のメイン agent は `validation_assistant` です。
 コアとなる Markdown spec は locale ごとに配置されています。
 
-- `agents/vintage_programmer/locales/zh-CN/`
-- `agents/vintage_programmer/locales/en/`
-- `agents/vintage_programmer/locales/ja-JP/`
+- `agents/validation_assistant/locales/zh-CN/`
+- `agents/validation_assistant/locales/en/`
+- `agents/validation_assistant/locales/ja-JP/`
 
 各ディレクトリには `soul.md`、`identity.md`、`agent.md`、`tools.md` が含まれます。root-level の同名ファイルは旧 workspace 向け fallback です。
 
@@ -248,7 +248,7 @@ skills/builtin/<skill_name>/SKILL.md
 skills/team/<skill_name>/SKILL.md
 ```
 
-両 catalog は特定の Agent に紐付きません。現在は Vintage Programmer が有効な metadata を発見し、選択後にだけ本文を読み込みます。Team Skill を commit する前に `python scripts/validate_skills.py` を実行してください。
+両 catalog は特定の Agent に紐付きません。現在は Validation Assistant が有効な metadata を発見し、選択後にだけ本文を読み込みます。Team Skill を commit する前に `python scripts/validate_skills.py` を実行してください。
 
 ## Inline Code
 
@@ -266,7 +266,7 @@ skills/team/<skill_name>/SKILL.md
 
 ```text
 保存済みの Settings 選択
-> サーバー既定 locale（VP_DEFAULT_LOCALE）
+> サーバー既定 locale（VA_DEFAULT_LOCALE）
 > ブラウザ言語
 > ja-JP fallback
 ```

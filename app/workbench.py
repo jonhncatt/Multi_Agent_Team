@@ -197,13 +197,13 @@ class WorkbenchStore:
     def enabled_skills_for_agent(self, agent_id: str) -> list[dict[str, Any]]:
         return self._skill_registry.enabled_skills(agent_id=agent_id)
 
-    def resolve_skill_reference(self, reference: str, *, agent_id: str = "vintage_programmer") -> dict[str, Any]:
+    def resolve_skill_reference(self, reference: str, *, agent_id: str = "validation_assistant") -> dict[str, Any]:
         return self._skill_registry.resolve(reference, agent_id=agent_id)
 
-    def load_skill(self, reference: str, *, agent_id: str = "vintage_programmer") -> dict[str, Any]:
+    def load_skill(self, reference: str, *, agent_id: str = "validation_assistant") -> dict[str, Any]:
         return self._skill_registry.load(reference, agent_id=agent_id)
 
-    def list_skill_resources(self, reference: str, *, agent_id: str = "vintage_programmer") -> list[str]:
+    def list_skill_resources(self, reference: str, *, agent_id: str = "validation_assistant") -> list[str]:
         return self._skill_registry.list_resources(reference, agent_id=agent_id)
 
     def load_skill_resource(
@@ -211,7 +211,7 @@ class WorkbenchStore:
         reference: str,
         resource: str,
         *,
-        agent_id: str = "vintage_programmer",
+        agent_id: str = "validation_assistant",
     ) -> dict[str, Any]:
         return self._skill_registry.load_resource(reference, resource, agent_id=agent_id)
 

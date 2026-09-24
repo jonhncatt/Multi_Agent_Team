@@ -35,14 +35,14 @@ class OpenAIAuthManager:
             normalized = [str(item or "").strip() for item in keys if str(item or "").strip()]
             if normalized:
                 return normalized
-        return ["VP_LLM_API_KEY"]
+        return ["VA_LLM_API_KEY"]
 
     def _primary_api_key_env(self) -> str:
         configured = str(getattr(self.config, "llm_primary_api_key_env", "") or "").strip()
         if configured:
             return configured
         keys = self._api_key_env_keys()
-        return keys[0] if keys else "VP_LLM_API_KEY"
+        return keys[0] if keys else "VA_LLM_API_KEY"
 
     def resolve(self) -> ResolvedOpenAIAuth:
         provider = self._llm_provider()
@@ -86,7 +86,7 @@ class OpenAIAuthManager:
                 mode="api_key",
                 source="implicit:ollama_no_key",
                 available=True,
-                api_key=str(os.environ.get("VP_OLLAMA_API_KEY") or "ollama"),
+                api_key=str(os.environ.get("VA_OLLAMA_API_KEY") or "ollama"),
             )
 
         for env_key in self._api_key_env_keys():

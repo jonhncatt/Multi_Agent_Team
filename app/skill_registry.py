@@ -64,9 +64,9 @@ def normalize_skill_scope(scope: str | None, *, default: str = SKILL_SCOPE_TEAM)
 
 
 class SkillRegistry:
-    """Global Built-in/Team skill catalog owned by the VP installation.
+    """Global Built-in/Team skill catalog owned by the VA installation.
 
-    The registry root is the Vintage Programmer repository, never the active
+    The registry root is the Validation Assistant repository, never the active
     business project. Legacy system/workspace locations are read only as
     migration sources and old scope names remain accepted as API aliases.
     """
@@ -192,7 +192,7 @@ class SkillRegistry:
         return (self._state_dir / SKILL_MIGRATION_FILE_NAME).resolve()
 
     def _legacy_override_paths(self) -> list[Path]:
-        return [(root / ".vp_skill_overrides.json").resolve() for root in self._legacy_workspace_roots]
+        return [(root / ".va_skill_overrides.json").resolve() for root in self._legacy_workspace_roots]
 
     def _read_skill_overrides(self) -> dict[str, Any]:
         merged: dict[str, Any] = {}

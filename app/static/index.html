@@ -3,47 +3,47 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Vintage Programmer</title>
-    <link rel="icon" href="/static/assets/vintage_programmer.ico?v=3" sizes="any" />
-    <link rel="icon" type="image/png" sizes="64x64" href="/static/assets/vintage_programmer_64.png?v=3" />
-    <link rel="icon" type="image/png" sizes="48x48" href="/static/assets/vintage_programmer_48.png?v=3" />
-    <link rel="icon" type="image/png" sizes="32x32" href="/static/assets/vintage_programmer_32.png?v=3" />
-    <link rel="icon" type="image/png" sizes="16x16" href="/static/assets/vintage_programmer_16.png?v=3" />
+    <title>Validation Assistant</title>
+    <link rel="icon" href="/static/assets/validation_assistant.ico?v=3" sizes="any" />
+    <link rel="icon" type="image/png" sizes="64x64" href="/static/assets/validation_assistant_64.png?v=3" />
+    <link rel="icon" type="image/png" sizes="48x48" href="/static/assets/validation_assistant_48.png?v=3" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/static/assets/validation_assistant_32.png?v=3" />
+    <link rel="icon" type="image/png" sizes="16x16" href="/static/assets/validation_assistant_16.png?v=3" />
     <script>
       (() => {
         const params = new URLSearchParams(window.location.search);
-        if (params.get("vp_desktop") !== "1") return;
+        if (params.get("va_desktop") !== "1") return;
         const fragment = new URLSearchParams(window.location.hash.replace(/^#/, ""));
-        const fragmentToken = String(fragment.get("vp_control") || "");
-        if (fragmentToken) window.sessionStorage.setItem("vp_desktop_control_token", fragmentToken);
-        window.__VP_DESKTOP_HOST__ = String(params.get("vp_host") || "");
-        window.__VP_DESKTOP_CONTROL_TOKEN__ = fragmentToken || String(
-          window.sessionStorage.getItem("vp_desktop_control_token") || "",
+        const fragmentToken = String(fragment.get("va_control") || "");
+        if (fragmentToken) window.sessionStorage.setItem("va_desktop_control_token", fragmentToken);
+        window.__VA_DESKTOP_HOST__ = String(params.get("va_host") || "");
+        window.__VA_DESKTOP_CONTROL_TOKEN__ = fragmentToken || String(
+          window.sessionStorage.getItem("va_desktop_control_token") || "",
         );
         if (fragmentToken) {
           window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
         }
-        const requestedScale = Number.parseFloat(params.get("vp_scale") || "0.8");
+        const requestedScale = Number.parseFloat(params.get("va_scale") || "0.8");
         const scale = Number.isFinite(requestedScale)
           ? Math.min(1.25, Math.max(0.65, requestedScale))
           : 0.8;
-        document.documentElement.dataset.vpDesktopShell = "true";
-        document.documentElement.style.setProperty("--vp-desktop-ui-scale", String(scale));
+        document.documentElement.dataset.vaDesktopShell = "true";
+        document.documentElement.style.setProperty("--va-desktop-ui-scale", String(scale));
         document.documentElement.style.setProperty(
-          "--vp-desktop-viewport-height",
+          "--va-desktop-viewport-height",
           `${100 / scale}vh`,
         );
       })();
     </script>
-    <link rel="stylesheet" href="/static/styles.css?v=3.1.7" />
+    <link rel="stylesheet" href="/static/styles.css?v=1.0.0" />
   </head>
   <body>
-    <div id="root" data-app="vintage-programmer">
+    <div id="root" data-app="validation-assistant">
       <main class="app-boot-screen" role="status" aria-live="polite">
         <div class="app-boot-card">
-          <img class="app-boot-mark" src="/static/assets/vintage_programmer.png" alt="" aria-hidden="true" />
+          <img class="app-boot-mark" src="/static/assets/validation_assistant.png" alt="" aria-hidden="true" />
           <div class="app-boot-copy">
-            <div class="app-boot-title">Vintage Programmer</div>
+            <div class="app-boot-title">Validation Assistant</div>
             <div class="app-boot-status">
               <span class="app-boot-ring" aria-hidden="true"></span>
               <span>Loading workspace...</span>
@@ -58,7 +58,7 @@
     <script src="/static/vendor/htm.umd.js"></script>
     <script src="/static/vendor/marked.umd.js"></script>
     <script src="/static/vendor/purify.min.js"></script>
-    <script src="/static/locales.js?v=3.1.7" defer></script>
-    <script src="/static/app.js?v=3.1.7" defer></script>
+    <script src="/static/locales.js?v=1.0.0" defer></script>
+    <script src="/static/app.js?v=1.0.0" defer></script>
   </body>
 </html>

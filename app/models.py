@@ -358,8 +358,8 @@ class ChatResponse(BaseModel):
     thread_id: str | None = None
     turn_id: str = ""
     run_id: str | None = None
-    agent_id: str = "vintage_programmer"
-    agent_title: str = "Vintage Programmer"
+    agent_id: str = "validation_assistant"
+    agent_title: str = "Validation Assistant"
     selected_business_module: str = ""
     effective_model: str | None = None
     queue_wait_ms: int = 0

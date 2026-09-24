@@ -1,6 +1,6 @@
-# Vintage Programmer
+# Validation Assistant
 
-![Version](https://img.shields.io/badge/version-3.1.7-blue)
+![Version](https://img.shields.io/badge/version-1.0.0-blue)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Backend](https://img.shields.io/badge/backend-FastAPI-green)
 ![Browser](https://img.shields.io/badge/browser-Playwright-green)
@@ -9,36 +9,36 @@
 
 A local-first AI agent workbench with observable activity tracing, editable agent specs, local skills, and harness-validated execution.
 
-**Vintage Programmer** is built for people who want observable AI execution, not just a final answer.  
+**Validation Assistant** is built for people who want observable AI execution, not just a final answer.
 Instead of hiding the process, it exposes the loop:
 **user request -> model action -> harness validation -> tool execution -> observation -> final answer**
 
 [Chinese README](README.zh-CN.md) · [Japanese README](README.ja.md) · [English README](README.en.md) · [Windows Guide](README.windows.md) · [Documentation Index](docs/README.md) · [Release Flow](RELEASING.md)
 
-Current stable release: `3.1.7`
+Current stable release: `1.0.0`
 
 ## Stable Runtime
 
 The current branch uses a global Skill Registry with read-only Built-in Skills and Git-managed Team Skills. The runtime injects lightweight `[available_skills]` metadata plus each enabled `SKILL.md` path; the model reads full instructions with ordinary `read_file` and runs bundled scripts with ordinary `exec_command`.
 
-`save_skill` writes reusable workflows only to `skills/team/<name>/SKILL.md` in the Vintage Programmer repository, independently of the active business project. The built-in `create-team-skill` guides Team Skill authoring; Built-in Skills remain read-only.
+`save_skill` writes reusable workflows only to `skills/team/<name>/SKILL.md` in the Validation Assistant repository, independently of the active business project. The built-in `create-team-skill` guides Team Skill authoring; Built-in Skills remain read-only.
 
 ## Max Output Tokens
 
 Recommended default:
 
 ```env
-VP_MAX_OUTPUT_TOKENS=16384
-VP_MAX_USER_REQUEST_CHARS=4000000
-VP_MAX_ATTACHMENT_CHARS=1000000
-VP_CONTEXT_AUTO_COMPACT_RATIO=0.9
-VP_CONTEXT_DANGER_COMPACT_RATIO=0.95
-VP_CONTEXT_HISTORY_SOFT_LIMIT_TOKENS=120000
-VP_CONTEXT_EXACT_STALE_SEC=60
+VA_MAX_OUTPUT_TOKENS=16384
+VA_MAX_USER_REQUEST_CHARS=4000000
+VA_MAX_ATTACHMENT_CHARS=1000000
+VA_CONTEXT_AUTO_COMPACT_RATIO=0.9
+VA_CONTEXT_DANGER_COMPACT_RATIO=0.95
+VA_CONTEXT_HISTORY_SOFT_LIMIT_TOKENS=120000
+VA_CONTEXT_EXACT_STALE_SEC=60
 ```
 
 This is the per-call output cap, not the total task limit. The 16384 default fits long-material Q&A on large-context models such as GPT-5.4; long tasks should still complete through multiple model/tool-loop steps rather than one 128K-scale response.
-`VP_MAX_USER_REQUEST_CHARS` is a safety character cap for the current user message; the actual model input is still packed by the active model context window and output reserve.
+`VA_MAX_USER_REQUEST_CHARS` is a safety character cap for the current user message; the actual model input is still packed by the active model context window and output reserve.
 
 Context status uses cached or quick estimates on the chat hot path instead of blocking on full tokenizer accounting every turn. `/status` opens the current Thread context details; `/compact` manually compacts old history. GPT-5.4 uses a 272K usable window, a 90% automatic compaction line, and a 95% danger line by default. Provider-reported `input_tokens` take precedence over local full-payload estimates.
 
@@ -52,7 +52,7 @@ Python `3.11` is recommended for the current stable runtime. Python `3.12` is al
 
 ## Command Safety
 
-`exec_command` keeps a conservative allowlist. `VP_ALLOWED_COMMANDS` is a full override rather than an append-only list. Command execution is limited by the current permission and path boundaries, and path arguments such as `rg /etc`, `git -C /tmp`, or `python /tmp/a.py` are checked. Every concrete `git push` requires one-time approval in any shell-enabled permission profile; approval is bound to the exact command, repository, remote URL fingerprint, branch, and HEAD. Command text found in a Skill or file is not execution authorization. Dangerous deletion and download-to-shell patterns remain blocked.
+`exec_command` keeps a conservative allowlist. `VA_ALLOWED_COMMANDS` is a full override rather than an append-only list. Command execution is limited by the current permission and path boundaries, and path arguments such as `rg /etc`, `git -C /tmp`, or `python /tmp/a.py` are checked. Every concrete `git push` requires one-time approval in any shell-enabled permission profile; approval is bound to the exact command, repository, remote URL fingerprint, branch, and HEAD. Command text found in a Skill or file is not execution authorization. Dangerous deletion and download-to-shell patterns remain blocked.
 
 ## Session = Thread
 
@@ -64,7 +64,7 @@ The default permission profile is `Auto`: read and write the current project, ru
 
 ## What it is
 
-Vintage Programmer is a local AI agent workstation centered on one default main agent: `vintage_programmer`.
+Validation Assistant is a local AI agent workstation centered on one default main agent: `validation_assistant`.
 
 It combines:
 
@@ -80,7 +80,7 @@ This repository is not a thin chat wrapper. It is meant for building, debugging,
 ## Why this project exists
 
 Most AI chat tools optimize for the final answer.
-Vintage Programmer optimizes for the execution path behind that answer.
+Validation Assistant optimizes for the execution path behind that answer.
 
 It is designed for scenarios where you want to understand:
 
@@ -102,7 +102,7 @@ That makes the agent easier to inspect, trust, and improve.
 - **Editable agent specs**  
   The main agent behavior is defined by local Markdown files you can inspect and change directly.
 - **Global skills system**
-  Built-in Skills ship read-only with the product; Team Skills are maintained together through the Vintage Programmer Git repository.
+  Built-in Skills ship read-only with the product; Team Skills are maintained together through the Validation Assistant Git repository.
 - **Verified provider profiles**  
   `.env.example` and source code currently verify support for OpenAI, OpenAI-compatible gateways, OpenRouter, and local Ollama profiles.
 - **Multilingual locale layer**  
@@ -111,7 +111,7 @@ That makes the agent easier to inspect, trust, and improve.
 ## How it differs from a normal chat UI
 
 A normal chat UI mainly shows the final answer.
-Vintage Programmer also shows the execution path:
+Validation Assistant also shows the execution path:
 
 - model intent and action proposal
 - harness validation
@@ -174,40 +174,40 @@ Copy `.env.example` to `.env`, then keep one provider profile enabled.
 ### OpenAI official
 
 ```env
-VP_LLM_PROVIDER=openai
-VP_OPENAI_API_KEY=your_key
-VP_OPENAI_DEFAULT_MODEL=gpt-5.4
+VA_LLM_PROVIDER=openai
+VA_OPENAI_API_KEY=your_key
+VA_OPENAI_DEFAULT_MODEL=gpt-5.4
 ```
 
-Vintage Programmer now uses explicit provider API key configuration only. It no longer falls back to local account-based auth files automatically.
+Validation Assistant now uses explicit provider API key configuration only. It no longer falls back to local account-based auth files automatically.
 
 ### OpenAI-compatible gateway
 
 ```env
-VP_LLM_PROVIDER=openai_compatible
-VP_OPENAI_COMPAT_API_KEY=your_gateway_key
-VP_OPENAI_COMPAT_BASE_URL=https://your-gateway.example.com/v1
-VP_OPENAI_COMPAT_CA_CERT_PATH=/absolute/path/to/your-root-ca.pem
-VP_OPENAI_COMPAT_DEFAULT_MODEL=gpt-5.4
+VA_LLM_PROVIDER=openai_compatible
+VA_OPENAI_COMPAT_API_KEY=your_gateway_key
+VA_OPENAI_COMPAT_BASE_URL=https://your-gateway.example.com/v1
+VA_OPENAI_COMPAT_CA_CERT_PATH=/absolute/path/to/your-root-ca.pem
+VA_OPENAI_COMPAT_DEFAULT_MODEL=gpt-5.4
 ```
 
 ### OpenRouter
 
 ```env
-VP_LLM_PROVIDER=openrouter
-VP_OPENROUTER_API_KEY=your_openrouter_key
-VP_OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
-VP_OPENROUTER_DEFAULT_MODEL=google/gemma-4-31b-it:free
-VP_OPENROUTER_MODEL_FALLBACKS=nvidia/nemotron-3-super-120b-a12b:free
+VA_LLM_PROVIDER=openrouter
+VA_OPENROUTER_API_KEY=your_openrouter_key
+VA_OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
+VA_OPENROUTER_DEFAULT_MODEL=google/gemma-4-31b-it:free
+VA_OPENROUTER_MODEL_FALLBACKS=nvidia/nemotron-3-super-120b-a12b:free
 ```
 
 ### Local Ollama
 
 ```env
-VP_LLM_PROVIDER=ollama
-VP_OLLAMA_BASE_URL=http://127.0.0.1:11434/v1
-VP_OLLAMA_API_KEY=ollama
-VP_OLLAMA_DEFAULT_MODEL=qwen2.5-coder:7b
+VA_LLM_PROVIDER=ollama
+VA_OLLAMA_BASE_URL=http://127.0.0.1:11434/v1
+VA_OLLAMA_API_KEY=ollama
+VA_OLLAMA_DEFAULT_MODEL=qwen2.5-coder:7b
 ```
 
 For more options, see [.env.example](.env.example).
@@ -228,12 +228,12 @@ The browser UI talks to these local app endpoints.
 
 ## Agent Specs
 
-The default main agent is `vintage_programmer`.
+The default main agent is `validation_assistant`.
 Its core Markdown specs are stored by locale:
 
-- `agents/vintage_programmer/locales/zh-CN/`
-- `agents/vintage_programmer/locales/en/`
-- `agents/vintage_programmer/locales/ja-JP/`
+- `agents/validation_assistant/locales/zh-CN/`
+- `agents/validation_assistant/locales/en/`
+- `agents/validation_assistant/locales/ja-JP/`
 
 Each directory contains `soul.md`, `identity.md`, `agent.md`, and `tools.md`. Root-level copies are only a legacy workspace fallback.
 
@@ -246,7 +246,7 @@ skills/builtin/<skill_name>/SKILL.md
 skills/team/<skill_name>/SKILL.md
 ```
 
-Both catalogs are independent of individual agents. The current Vintage Programmer runtime discovers enabled metadata globally and loads full content only after selection. Use `python scripts/validate_skills.py` before committing Team Skills.
+Both catalogs are independent of individual agents. The current Validation Assistant runtime discovers enabled metadata globally and loads full content only after selection. Use `python scripts/validate_skills.py` before committing Team Skills.
 
 ## Inline Code
 
@@ -264,7 +264,7 @@ Effective initial locale priority:
 
 ```text
 saved Settings selection
-> server default locale (VP_DEFAULT_LOCALE)
+> server default locale (VA_DEFAULT_LOCALE)
 > browser language
 > ja-JP fallback
 ```

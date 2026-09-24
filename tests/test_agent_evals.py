@@ -50,7 +50,7 @@ def test_default_agent_quality_suite_is_valid() -> None:
     suite = load_eval_suite(DEFAULT_CASES_PATH)
 
     assert suite["schema_version"] == 1
-    assert suite["suite"] == "vintage_programmer_agent_quality"
+    assert suite["suite"] == "validation_assistant_agent_quality"
     assert [case["name"] for case in suite["cases"]] == [
         "c_style_cpp_protocol_frame_parser",
         "multi_file_protocol_analysis",
@@ -620,7 +620,7 @@ class _TeamSkillUpdateFakeRuntime:
 
     def run(self, *, message, settings, context, progress_cb=None):
         _ = (message, settings, context, progress_cb)
-        root = self.config.workspace_root / ".eval_runtime" / "vp_install" / "skills" / "team"
+        root = self.config.workspace_root / ".eval_runtime" / "va_install" / "skills" / "team"
         skill = root / "protocol-review" / "SKILL.md"
         rules = root / "protocol-review" / "references" / "RULES.md"
         skill.write_text(
@@ -666,7 +666,7 @@ class _SkillMaintenanceTranslationFakeRuntime:
 
     def run(self, *, message, settings, context, progress_cb=None):
         _ = (message, settings, context, progress_cb)
-        root = self.config.workspace_root / ".eval_runtime" / "vp_install" / "skills" / "team"
+        root = self.config.workspace_root / ".eval_runtime" / "va_install" / "skills" / "team"
         skill = root / "translation-maintenance" / "SKILL.md"
         skill.write_text(
             "---\n"

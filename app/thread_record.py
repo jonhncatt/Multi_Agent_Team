@@ -135,7 +135,7 @@ def agent_state_compat(session: dict[str, Any]) -> dict[str, Any]:
     pending = pending_interaction_from_session(session)
     pending_turn = _dict(pending.get("turn"))
     return {
-        "agent_id": "vintage_programmer",
+        "agent_id": "validation_assistant",
         "phase": "waiting_user" if pending else "idle",
         "turn_status": "needs_user_input" if pending else "idle",
         "last_run_id": _text(session.get("latest_run_id")),

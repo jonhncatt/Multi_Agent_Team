@@ -1,6 +1,6 @@
-# Vintage Programmer
+# Validation Assistant
 
-![Version](https://img.shields.io/badge/version-3.1.7-blue)
+![Version](https://img.shields.io/badge/version-1.0.0-blue)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Backend](https://img.shields.io/badge/backend-FastAPI-green)
 ![Browser](https://img.shields.io/badge/browser-Playwright-green)
@@ -9,44 +9,44 @@
 
 一个本地优先的 AI Agent 工作台，重点是可观察的 activity tracing（执行过程追踪）、可编辑 agent specs（Agent 规范）和 harness-validated execution（由 harness 验证的执行链路）。
 
-**Vintage Programmer** 不是普通聊天 UI。  
+**Validation Assistant** 不是普通聊天 UI。
 它希望让用户看到 Agent 在一个 turn（用户一轮请求）里到底经历了什么：
 **用户请求 -> 模型行动 -> harness 验证 -> 工具执行 -> 观察结果 -> 最终回答**
 
 [English README](README.en.md) · [日本語 README](README.ja.md) · [中文镜像](README.zh-CN.md) · [Windows 指南](README.windows.md) · [文档索引](docs/README.md) · [发布流程](RELEASING.md)
 
-当前稳定版本：`3.1.7`
+当前稳定版本：`1.0.0`
 
 ## Stable Runtime
 
-3.1.7 当前分支使用独立的全局 Skill Registry：支持只读 Built-in Skills 和通过 Vintage Programmer Git 仓库共享的 Team Skills。runtime 只注入带路径的轻量 `[available_skills]`；模型命中后用普通 `read_file` 按需读取完整 `SKILL.md`。
+1.0.0 当前分支使用独立的全局 Skill Registry：支持只读 Built-in Skills 和通过 Validation Assistant Git 仓库共享的 Team Skills。runtime 只注入带路径的轻量 `[available_skills]`；模型命中后用普通 `read_file` 按需读取完整 `SKILL.md`。
 
-`save_skill` 只把可复用流程写入 `skills/team/<name>/SKILL.md`；保存位置由 VP 安装仓库决定，与当前选择的业务项目无关。内置 `create-team-skill` 指导 Agent 生成 Team Skill，Built-in Skills 保持只读。
+`save_skill` 只把可复用流程写入 `skills/team/<name>/SKILL.md`；保存位置由 VA 安装仓库决定，与当前选择的业务项目无关。内置 `create-team-skill` 指导 Agent 生成 Team Skill，Built-in Skills 保持只读。
 
 ## Max Output Tokens
 
 推荐默认设置：
 
 ```env
-VP_MAX_OUTPUT_TOKENS=16384
-VP_MAX_USER_REQUEST_CHARS=4000000
-VP_MAX_ATTACHMENT_CHARS=1000000
-VP_CONTEXT_WINDOW_TOKENS=0
-VP_MODEL_MAX_CONTEXT_WINDOW_TOKENS=0
-VP_CONTEXT_AUTO_COMPACT_TOKEN_LIMIT=0
-VP_CONTEXT_AUTO_COMPACT_RATIO=0.9
-VP_CONTEXT_DANGER_COMPACT_RATIO=0.95
-VP_CONTEXT_HISTORY_SOFT_LIMIT_TOKENS=120000
-VP_CONTEXT_EXACT_STALE_SEC=60
-VP_TOOL_OUTPUT_TOKEN_LIMIT=10000
+VA_MAX_OUTPUT_TOKENS=16384
+VA_MAX_USER_REQUEST_CHARS=4000000
+VA_MAX_ATTACHMENT_CHARS=1000000
+VA_CONTEXT_WINDOW_TOKENS=0
+VA_MODEL_MAX_CONTEXT_WINDOW_TOKENS=0
+VA_CONTEXT_AUTO_COMPACT_TOKEN_LIMIT=0
+VA_CONTEXT_AUTO_COMPACT_RATIO=0.9
+VA_CONTEXT_DANGER_COMPACT_RATIO=0.95
+VA_CONTEXT_HISTORY_SOFT_LIMIT_TOKENS=120000
+VA_CONTEXT_EXACT_STALE_SEC=60
+VA_TOOL_OUTPUT_TOKEN_LIMIT=10000
 ```
 
 这个值是单次模型调用的输出上限，不是整个任务的总上限。默认 16384 适合 GPT-5.4 这类大上下文模型的长材料问答；长任务仍应通过多轮 model/tool loop 完成，而不是依赖一次 128K 级别的超大回复。
-`VP_MAX_USER_REQUEST_CHARS` 是当前用户输入的安全字符上限；实际进入模型的内容还会按当前模型 context window 和输出预留做 token 预算裁剪。
+`VA_MAX_USER_REQUEST_CHARS` 是当前用户输入的安全字符上限；实际进入模型的内容还会按当前模型 context window 和输出预留做 token 预算裁剪。
 
-主 Thread 的全局并发运行上限默认是 `5`，因此最多可同时执行五条不同 Thread；超过上限的运行会进入队列。可用 `VP_MAX_CONCURRENT_RUNS` 在 `1–32` 之间覆盖此值。它与单个主 Turn 内的 `VP_MAX_CONCURRENT_SUBAGENTS` 子 Agent 并发上限相互独立。
+主 Thread 的全局并发运行上限默认是 `5`，因此最多可同时执行五条不同 Thread；超过上限的运行会进入队列。可用 `VA_MAX_CONCURRENT_RUNS` 在 `1–32` 之间覆盖此值。它与单个主 Turn 内的 `VA_MAX_CONCURRENT_SUBAGENTS` 子 Agent 并发上限相互独立。
 
-Context 状态采用 Codex 风格的轻量常驻显示：聊天主路径先使用缓存或 quick 估算，只在接近阈值时做精确 tokenizer 复核。轮前与轮中共用同一个 `ContextWindowStatus`；历史和实时工具事务都按 token 预算保留，不再按固定 turn/message 数裁剪。provider 若降级到更小窗口模型，会在下一次请求前重算并用本地确定性摘要压缩旧 replay，不额外调用模型。`/status` 会读取当前 thread 的 context 状态并打开详情；`/compact` 会手动整理旧历史并在运行记录中显示 context compaction 事件。GPT-5.4 和 GPT-5.6 默认按 272K 运行窗口、90% 自动整理线和 95% 硬保护线处理；GPT-5.6 的模型最大窗口会单独显示，不会自动成为运行窗口。真实 provider `input_tokens` 可用时优先于本地估算。只有在公司部署的可用窗口已经确认时，才设置 `VP_CONTEXT_WINDOW_TOKENS` 或绝对阈值 `VP_CONTEXT_AUTO_COMPACT_TOKEN_LIMIT`；值为 `0` 表示使用内置默认值。`VP_CONTEXT_HISTORY_SOFT_LIMIT_TOKENS` 仅保留为历史噪音诊断，不再单独触发全文压缩。单个工具结果进入模型前受 `VP_TOOL_OUTPUT_TOKEN_LIMIT` 限制；被省略的完整结果只在实际截断时写入 Thread 侧存储，并可通过 `read_tool_result` 续读，不会重跑原工具。当前 Chat Completions Runtime 不调用 `/responses/compact`，该能力留到以后迁移 Responses API 时接入。
+Context 状态采用 Codex 风格的轻量常驻显示：聊天主路径先使用缓存或 quick 估算，只在接近阈值时做精确 tokenizer 复核。轮前与轮中共用同一个 `ContextWindowStatus`；历史和实时工具事务都按 token 预算保留，不再按固定 turn/message 数裁剪。provider 若降级到更小窗口模型，会在下一次请求前重算并用本地确定性摘要压缩旧 replay，不额外调用模型。`/status` 会读取当前 thread 的 context 状态并打开详情；`/compact` 会手动整理旧历史并在运行记录中显示 context compaction 事件。GPT-5.4 和 GPT-5.6 默认按 272K 运行窗口、90% 自动整理线和 95% 硬保护线处理；GPT-5.6 的模型最大窗口会单独显示，不会自动成为运行窗口。真实 provider `input_tokens` 可用时优先于本地估算。只有在公司部署的可用窗口已经确认时，才设置 `VA_CONTEXT_WINDOW_TOKENS` 或绝对阈值 `VA_CONTEXT_AUTO_COMPACT_TOKEN_LIMIT`；值为 `0` 表示使用内置默认值。`VA_CONTEXT_HISTORY_SOFT_LIMIT_TOKENS` 仅保留为历史噪音诊断，不再单独触发全文压缩。单个工具结果进入模型前受 `VA_TOOL_OUTPUT_TOKEN_LIMIT` 限制；被省略的完整结果只在实际截断时写入 Thread 侧存储，并可通过 `read_tool_result` 续读，不会重跑原工具。当前 Chat Completions Runtime 不调用 `/responses/compact`，该能力留到以后迁移 Responses API 时接入。
 
 ## Python Commands
 
@@ -58,7 +58,7 @@ Context 状态采用 Codex 风格的轻量常驻显示：聊天主路径先使�
 
 ## Command Safety
 
-`exec_command` 继续使用保守 allowlist，默认安全列表包含 `printf`、`dir` 和 Windows 程序定位命令 `where`，并且 `VP_ALLOWED_COMMANDS` 是完整覆盖，不是增量追加。默认命令执行仍受当前权限模式和路径边界约束，且会检查 `rg /etc`、`git -C /tmp`、`python /tmp/a.py` 这类路径参数。`curl`、`wget`、`pip install`、`npm install`、`git pull/fetch` 等供应链相关命令默认不在安全列表；如果管理员显式加入 allowlist，Full Access 下也会先进入单次审批。`git push` 在任何允许 shell 的权限模式下都必须逐次审批，审批绑定当前仓库、remote、remote URL 指纹、branch、HEAD 和精确命令；其中任一项变化都会使 token 失效。Skill、源码或文档中出现命令文字不构成执行授权。危险删除、`sudo rm`、下载脚本 pipe shell 等模式仍会被硬拒绝。
+`exec_command` 继续使用保守 allowlist，默认安全列表包含 `printf`、`dir` 和 Windows 程序定位命令 `where`，并且 `VA_ALLOWED_COMMANDS` 是完整覆盖，不是增量追加。默认命令执行仍受当前权限模式和路径边界约束，且会检查 `rg /etc`、`git -C /tmp`、`python /tmp/a.py` 这类路径参数。`curl`、`wget`、`pip install`、`npm install`、`git pull/fetch` 等供应链相关命令默认不在安全列表；如果管理员显式加入 allowlist，Full Access 下也会先进入单次审批。`git push` 在任何允许 shell 的权限模式下都必须逐次审批，审批绑定当前仓库、remote、remote URL 指纹、branch、HEAD 和精确命令；其中任一项变化都会使 token 失效。Skill、源码或文档中出现命令文字不构成执行授权。危险删除、`sudo rm`、下载脚本 pipe shell 等模式仍会被硬拒绝。
 
 ## Session = Thread
 
@@ -68,7 +68,7 @@ Context 状态采用 Codex 风格的轻量常驻显示：聊天主路径先使�
 
 ## Manual Update
 
-侧边栏“更新”按钮现在是手动应用仓库更新入口。只有用户点击时才会调用 `/api/app/update`，不会后台检查、轮询或自动 fetch。后端固定执行 `git fetch --tags origin`、`git reset --hard origin/<branch>`、`git pull --ff-only`，目标是 Vintage Programmer 应用仓库，不是当前 project root。更新会丢弃 tracked 文件的未提交修改。桌面 EXE 模式更新成功后会显示“关闭”和“立即重启 VP”两个选项；选择重启时，受桌面令牌保护的本地接口会用无控制台窗口的助手停止旧后台、启动新后台，当前窗口显示 Preparing 风格的等待界面，并在检测到新进程后自动刷新。
+侧边栏“更新”按钮现在是手动应用仓库更新入口。只有用户点击时才会调用 `/api/app/update`，不会后台检查、轮询或自动 fetch。后端固定执行 `git fetch --tags origin`、`git reset --hard origin/<branch>`、`git pull --ff-only`，目标是 Validation Assistant 应用仓库，不是当前 project root。更新会丢弃 tracked 文件的未提交修改。桌面 EXE 模式更新成功后会显示“关闭”和“立即重启 VA”两个选项；选择重启时，受桌面令牌保护的本地接口会用无控制台窗口的助手停止旧后台、启动新后台，当前窗口显示 Preparing 风格的等待界面，并在检测到新进程后自动刷新。
 
 ## Permission Profiles
 
@@ -79,19 +79,19 @@ Context 状态采用 Codex 风格的轻量常驻显示：聊天主路径先使�
 默认 `browser_open` 仍使用 Playwright 管理的 headless Chromium。企业环境如果拦截 Chromium 安装或执行，可以改用本机已安装的 Google Chrome，并使用一个专用 profile 保存登录态：
 
 ```env
-VP_BROWSER_MODE=chrome_profile
-VP_BROWSER_CHANNEL=chrome
-VP_BROWSER_HEADLESS=false
-VP_BROWSER_USER_DATA_DIR=app/data/browser_profile
-VP_BROWSER_CHROMIUM_SANDBOX=true
-VP_BROWSER_DISABLE_PASSWORD_MANAGER=true
+VA_BROWSER_MODE=chrome_profile
+VA_BROWSER_CHANNEL=chrome
+VA_BROWSER_HEADLESS=false
+VA_BROWSER_USER_DATA_DIR=app/data/browser_profile
+VA_BROWSER_CHROMIUM_SANDBOX=true
+VA_BROWSER_DISABLE_PASSWORD_MANAGER=true
 ```
 
-首次打开 Redmine、内部 wiki 等需要登录的站点时，Chrome 会以可见窗口打开。用户自己输入账号密码完成登录；后续 agent 可以在这个已登录 profile 里点击页面、读取当前页面文本和截图。VP 后台只启动一个使用该 profile 的 persistent Chrome context，每个 Thread 最多复用其中一个独立 tab；这样不同 Thread 共享登录态，但不会互相覆盖页面或争抢 Chrome profile 锁。`app/data/browser_profile` 是 VP 专用目录；不要把个人主 Chrome profile 直接作为 `VP_BROWSER_USER_DATA_DIR`。`VP_BROWSER_DISABLE_PASSWORD_MANAGER=true` 会禁止 Chrome 在 VP profile 里提示保存密码，但不会阻止站点 cookie/session 保留登录态。`VP_BROWSER_CHROMIUM_SANDBOX=true` 会避免 Chrome 显示 `--no-sandbox` 安全警告；如果某台机器的策略导致 Chrome 无法启动，再临时改成 `false` 排查。
+首次打开 Redmine、内部 wiki 等需要登录的站点时，Chrome 会以可见窗口打开。用户自己输入账号密码完成登录；后续 agent 可以在这个已登录 profile 里点击页面、读取当前页面文本和截图。VA 后台只启动一个使用该 profile 的 persistent Chrome context，每个 Thread 最多复用其中一个独立 tab；这样不同 Thread 共享登录态，但不会互相覆盖页面或争抢 Chrome profile 锁。`app/data/browser_profile` 是 VA 专用目录；不要把个人主 Chrome profile 直接作为 `VA_BROWSER_USER_DATA_DIR`。`VA_BROWSER_DISABLE_PASSWORD_MANAGER=true` 会禁止 Chrome 在 VA profile 里提示保存密码，但不会阻止站点 cookie/session 保留登录态。`VA_BROWSER_CHROMIUM_SANDBOX=true` 会避免 Chrome 显示 `--no-sandbox` 安全警告；如果某台机器的策略导致 Chrome 无法启动，再临时改成 `false` 排查。
 
 ## 这是什么
 
-Vintage Programmer 是一个本地运行的 AI Agent 工作台，默认主 agent 是 `vintage_programmer`。
+Validation Assistant 是一个本地运行的 AI Agent 工作台，默认主 agent 是 `validation_assistant`。
 
 它把这些能力放在同一个仓库里：
 
@@ -107,7 +107,7 @@ Vintage Programmer 是一个本地运行的 AI Agent 工作台，默认主 agent
 ## 为什么做这个项目
 
 很多 AI 聊天产品更关注最终回答。
-Vintage Programmer 更关注回答背后的执行过程。
+Validation Assistant 更关注回答背后的执行过程。
 
 它适合这种场景：
 
@@ -129,7 +129,7 @@ Vintage Programmer 更关注回答背后的执行过程。
 - **可编辑 Agent 规范**  
   主 agent 的行为由本地 Markdown 文件定义，可直接查看和修改。
 - **全局 Skills 系统**
-  Built-in Skills 随产品发布且只读；Team Skills 随 Vintage Programmer Git 仓库由团队共同维护，不会写入当前业务项目。
+  Built-in Skills 随产品发布且只读；Team Skills 随 Validation Assistant Git 仓库由团队共同维护，不会写入当前业务项目。
 - **经过源码验证的 provider 配置**  
   README 和 `.env.example` 给出 OpenAI、OpenAI-compatible 网关、OpenRouter 和本地 Ollama 的常用配置示例；源码 provider presets 还覆盖 DeepSeek、Qwen、Moonshot 和 Groq。
 - **多语言 UI 和文档**  
@@ -138,7 +138,7 @@ Vintage Programmer 更关注回答背后的执行过程。
 ## 和普通 Chat UI 有什么不同
 
 普通 Chat UI 更关注最终回答。
-Vintage Programmer 更关注 Agent 的执行过程可见性。
+Validation Assistant 更关注 Agent 的执行过程可见性。
 
 默认可以看到：
 
@@ -205,45 +205,45 @@ Windows 版本的推荐启动方式见 [README.windows.md](README.windows.md)。
 ### OpenAI 官方
 
 ```env
-VP_LLM_PROVIDER=openai
-VP_OPENAI_API_KEY=your_key
-VP_OPENAI_DEFAULT_MODEL=gpt-5.4
+VA_LLM_PROVIDER=openai
+VA_OPENAI_API_KEY=your_key
+VA_OPENAI_DEFAULT_MODEL=gpt-5.4
 ```
 
-Vintage Programmer 使用显式的 provider API key 配置，不再从本地账号登录状态自动回退认证。
+Validation Assistant 使用显式的 provider API key 配置，不再从本地账号登录状态自动回退认证。
 
 ### OpenAI-compatible 网关
 
 ```env
-VP_LLM_PROVIDER=openai_compatible
-VP_OPENAI_COMPAT_API_KEY=your_gateway_key
-VP_OPENAI_COMPAT_BASE_URL=https://your-gateway.example.com/v1
-VP_OPENAI_COMPAT_CA_CERT_PATH=/absolute/path/to/your-root-ca.pem
-VP_OPENAI_COMPAT_DEFAULT_MODEL=gpt-5.4
+VA_LLM_PROVIDER=openai_compatible
+VA_OPENAI_COMPAT_API_KEY=your_gateway_key
+VA_OPENAI_COMPAT_BASE_URL=https://your-gateway.example.com/v1
+VA_OPENAI_COMPAT_CA_CERT_PATH=/absolute/path/to/your-root-ca.pem
+VA_OPENAI_COMPAT_DEFAULT_MODEL=gpt-5.4
 ```
 
 ### OpenRouter
 
 ```env
-VP_LLM_PROVIDER=openrouter
-VP_OPENROUTER_API_KEY=your_openrouter_key
-VP_OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
-VP_OPENROUTER_DEFAULT_MODEL=google/gemma-4-31b-it:free
-VP_OPENROUTER_MODEL_FALLBACKS=nvidia/nemotron-3-super-120b-a12b:free
+VA_LLM_PROVIDER=openrouter
+VA_OPENROUTER_API_KEY=your_openrouter_key
+VA_OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
+VA_OPENROUTER_DEFAULT_MODEL=google/gemma-4-31b-it:free
+VA_OPENROUTER_MODEL_FALLBACKS=nvidia/nemotron-3-super-120b-a12b:free
 ```
 
 ### 本地 Ollama
 
 ```env
-VP_LLM_PROVIDER=ollama
-VP_OLLAMA_BASE_URL=http://127.0.0.1:11434/v1
-VP_OLLAMA_API_KEY=ollama
-VP_OLLAMA_DEFAULT_MODEL=qwen2.5-coder:7b
+VA_LLM_PROVIDER=ollama
+VA_OLLAMA_BASE_URL=http://127.0.0.1:11434/v1
+VA_OLLAMA_API_KEY=ollama
+VA_OLLAMA_DEFAULT_MODEL=qwen2.5-coder:7b
 ```
 
 ### 手动更新模型预设
 
-Settings 的“模型预设”旁提供“更新列表”按钮。只有点击该按钮时，VP 才会向当前 Provider 的 `/models` 接口查询可用模型；查询结果保存在本机缓存，并与 `.env` 中的默认模型和静态预设合并。启动 VP、打开 Settings 和切换项目都不会自动访问模型列表接口。
+Settings 的“模型预设”旁提供“更新列表”按钮。只有点击该按钮时，VA 才会向当前 Provider 的 `/models` 接口查询可用模型；查询结果保存在本机缓存，并与 `.env` 中的默认模型和静态预设合并。启动 VA、打开 Settings 和切换项目都不会自动访问模型列表接口。
 
 如果公司的 OpenAI-compatible 网关没有开放 `/models`，按钮会显示失败，但不会覆盖已有预设；此时仍可在“自定义模型”中填写部署名称。
 
@@ -268,12 +268,12 @@ Settings 的“模型预设”旁提供“更新列表”按钮。只有点击�
 
 ## Agent 规范
 
-默认主 agent 是 `vintage_programmer`。
+默认主 agent 是 `validation_assistant`。
 它的核心 Markdown 规范文件按 locale 存放：
 
-- `agents/vintage_programmer/locales/zh-CN/`
-- `agents/vintage_programmer/locales/en/`
-- `agents/vintage_programmer/locales/ja-JP/`
+- `agents/validation_assistant/locales/zh-CN/`
+- `agents/validation_assistant/locales/en/`
+- `agents/validation_assistant/locales/ja-JP/`
 
 每个目录包含 `soul.md`、`identity.md`、`agent.md`、`tools.md`。根目录同名文件仅作为旧 workspace fallback。
 
@@ -288,11 +288,11 @@ Settings 的“模型预设”旁提供“更新列表”按钮。只有点击�
 
 ## Skills
 
-VP 当前支持两类 skills：
+VA 当前支持两类 skills：
 
 ```text
 skills/builtin/<skill>/SKILL.md   # 产品维护、只读、全局发现
-skills/team/<skill>/SKILL.md      # 团队维护、随 VP Git 仓库分发
+skills/team/<skill>/SKILL.md      # 团队维护、随 VA Git 仓库分发
 ```
 
 仓库内置了一个启用的 Built-in Skill，用来指导 Agent 创建 Team Skill：
@@ -303,7 +303,7 @@ skills/team/<skill>/SKILL.md      # 团队维护、随 VP Git 仓库分发
 
 - `skills/team/sample-team-skill/SKILL.md`
 
-两类 Skill 都独立于具体 Agent 存储和发现。当前只有 `vintage_programmer` 使用它们；未来其他 Agent 可以通过同一个 Registry 发现，再按能力选择。Built-in/Team 只表示维护来源与可变性，不绑定 Agent。
+两类 Skill 都独立于具体 Agent 存储和发现。当前只有 `validation_assistant` 使用它们；未来其他 Agent 可以通过同一个 Registry 发现，再按能力选择。Built-in/Team 只表示维护来源与可变性，不绑定 Agent。
 
 `SKILL.md` 只支持一个规范格式：
 
@@ -327,9 +327,9 @@ Agent 可以调用 `save_skill` 创建 Team Skill 或整体替换 `SKILL.md`；�
 
 已启用的 Skill 如果包含脚本，Agent 使用普通 `exec_command` 和 Skill 目录下的绝对脚本路径，直接执行 Python、Shell、Node 或 PowerShell 脚本。脚本路径受统一 `RuntimeBoundary` 校验，执行工作目录仍是当前业务项目；禁用 Skill 不展示，也不会被加入本轮 Skill 读取/命令范围。`load_skill` 和 `run_skill_script` 不再属于模型工具。
 
-直接运行 Skill 脚本时，Runtime 注入四个非密钥定位变量：`VP_SKILL_ROOT`、`VP_SKILL_SCRIPT`、`VP_PROJECT_ROOT`、`VP_PROJECT_CWD`。Skill 自带资源必须基于脚本自身位置或 `VP_SKILL_ROOT` 解析，业务输入输出基于 `VP_PROJECT_ROOT` / `VP_PROJECT_CWD`；不得依赖进程 cwd 去寻找 Skill 文件。
+直接运行 Skill 脚本时，Runtime 注入四个非密钥定位变量：`VA_SKILL_ROOT`、`VA_SKILL_SCRIPT`、`VA_PROJECT_ROOT`、`VA_PROJECT_CWD`。Skill 自带资源必须基于脚本自身位置或 `VA_SKILL_ROOT` 解析，业务输入输出基于 `VA_PROJECT_ROOT` / `VA_PROJECT_CWD`；不得依赖进程 cwd 去寻找 Skill 文件。
 
-Skill 所需密钥统一写在 VP 安装仓库根目录的 `.env`，或由启动 VP 的进程环境提供。VP 不再读取启动目录或当前业务项目的 `.env`；如果需要把凭证文件放在仓库外，可在启动进程中设置绝对路径 `VP_DOTENV_PATH`。`.env` 只在 VP 启动时加载，修改后需要重启。Skill 脚本只读取例如 `os.environ["REDMINE_API_KEY"]` 这样的继承环境变量，不得搜索、读取、解析、打印或记录 `.env` 和密钥值。
+Skill 所需密钥统一写在 VA 安装仓库根目录的 `.env`，或由启动 VA 的进程环境提供。VA 不再读取启动目录或当前业务项目的 `.env`；如果需要把凭证文件放在仓库外，可在启动进程中设置绝对路径 `VA_DOTENV_PATH`。`.env` 只在 VA 启动时加载，修改后需要重启。Skill 脚本只读取例如 `os.environ["REDMINE_API_KEY"]` 这样的继承环境变量，不得搜索、读取、解析、打印或记录 `.env` 和密钥值。
 
 完整的脚本模板和迁移清单见 [`docs/skill_runtime_contract.md`](docs/skill_runtime_contract.md)。
 
@@ -358,7 +358,7 @@ python scripts/validate_skills.py
 
 ```text
 已保存的 Settings 选择
-> 服务端默认语言（VP_DEFAULT_LOCALE）
+> 服务端默认语言（VA_DEFAULT_LOCALE）
 > 浏览器语言
 > ja-JP 兜底
 ```

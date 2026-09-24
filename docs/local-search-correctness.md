@@ -18,10 +18,10 @@ architecturally. No Nucleo, Rust, watcher, database or runtime rewrite.
 | Windows symlink test failures | Tests assumed OS privilege | `tests/test_filename_search.py`: attempt actual symlinks and capability-skip on OSError; separate mocked permission-resolver test always runs |
 | Historical tool output became source evidence | Missing explicit runtime path exclusions; `.gitignore` incomplete | `app/code_search.py`: shared `RUNTIME_SEARCH_EXCLUDED_PATHS`, applied to rg and fallback; `.gitignore` adds tool_results/subagents; filename walker uses same scope |
 | False complete results for files over 16 MiB | `size_limit_applied` was ignored by public result | `app/local_tools.py`: completeness is false, explicit `size_limit` reason and continuation; fallback reports observed size skips |
-| Filename snapshots stale after VP writes | No mutation-to-cache invalidation | `FilenameSearch.invalidate(path=None)` drops snapshots without scanning; native writes call it, and next search rebuilds |
+| Filename snapshots stale after VA writes | No mutation-to-cache invalidation | `FilenameSearch.invalidate(path=None)` drops snapshots without scanning; native writes call it, and next search rebuilds |
 
-VP repository identification uses the combination of `app/local_tools.py`,
-`app/vintage_programmer_runtime.py` and the built-in Vintage Programmer profile.
+VA repository identification uses the combination of `app/local_tools.py`,
+`app/validation_assistant_runtime.py` and the built-in Validation Assistant profile.
 Exclusions are relative paths, not generic `data` or `tool_results` basenames.
 Explicit roots inside a runtime subtree are searchable, including ignored files.
 Broad `file_glob` filters cannot override runtime exclusions from a parent root.
@@ -97,16 +97,16 @@ macOS ARM64 / Python 3.11.7 / rg 15.1.0, warm caches, 20 calls per query:
 Unlike the older `df95e26d` snapshot, this snapshot contains benchmark source/docs
 mentioning the queries, so both return three real file-content hits. No historical
 runtime output is included. Added scope checks cost roughly 0.8–1.2 ms in this
-run; there is no second filename scan. Current filename queries: first `vprb`
-13.172 ms, second 1.253 ms; incremental `v/vp/vpr/vprb`:
+run; there is no second filename scan. Current filename queries: first `varb`
+13.172 ms, second 1.253 ms; incremental `v/va/var/varb`:
 7.163 / 7.095 / 7.679 / 1.254 ms. Timing varies by machine and OS caches.
 
 ## Changed files
 
 - Search implementation: `app/code_search.py`, `app/filename_search.py`,
   `app/local_tools.py`.
-- Tool guidance: `app/vp_runtime_backend.py`,
-  `agents/vintage_programmer/locales/{en,ja-JP,zh-CN}/tools.md`.
+- Tool guidance: `app/va_runtime_backend.py`,
+  `agents/validation_assistant/locales/{en,ja-JP,zh-CN}/tools.md`.
 - Portability and verification: `scripts/benchmark_local_search.py`,
   `tests/test_code_search.py`, `tests/test_filename_search.py`,
   `tests/test_search_portability.py`.

@@ -276,7 +276,7 @@ def test_manual_compact_can_pack_short_history_with_smaller_retention() -> None:
             {"id": "turn-1", "role": "user", "text": "hi"},
             {"id": "turn-2", "role": "assistant", "text": "Hi! How can I help you today?"},
             {"id": "turn-3", "role": "user", "text": "介绍自己"},
-            {"id": "turn-4", "role": "assistant", "text": "我是 vintage_programmer。"},
+            {"id": "turn-4", "role": "assistant", "text": "我是 validation_assistant。"},
         ],
     }
 

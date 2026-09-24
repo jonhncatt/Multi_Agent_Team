@@ -2,7 +2,7 @@
 
 ## 目的
 
-本次审计检查 VintageProgrammer 暴露给模型的全部 33 个工具，重点不是工具能否执行，而是模型在调用前能否从工具名称、描述和参数 schema 中准确知道：
+本次审计检查 ValidationAssistant 暴露给模型的全部 33 个工具，重点不是工具能否执行，而是模型在调用前能否从工具名称、描述和参数 schema 中准确知道：
 
 - 该选哪个操作或枚举值；
 - 参数的单位、默认值和范围；
@@ -10,7 +10,7 @@
 - 是否会覆盖文件、产生外部影响或继承不可信来源；
 - 成功返回后还需要执行什么后续动作。
 
-Codex 的公开实现也会把 `apply_patch` 的 Add、Update、Delete 选择规则和完整 patch 语法明确提供给模型，而不是假设模型能从服务端实现中自行推断。参考：[Codex apply_patch instructions](https://github.com/openai/codex/blob/main/codex-rs/core/prompt_with_apply_patch_instructions.md)。VintageProgrammer 使用公司 Chat Completions 接口，因此把这些信息放进模型实际收到的工具 description 和参数 schema，同时由 Runtime 做严格校验。
+Codex 的公开实现也会把 `apply_patch` 的 Add、Update、Delete 选择规则和完整 patch 语法明确提供给模型，而不是假设模型能从服务端实现中自行推断。参考：[Codex apply_patch instructions](https://github.com/openai/codex/blob/main/codex-rs/core/prompt_with_apply_patch_instructions.md)。ValidationAssistant 使用公司 Chat Completions 接口，因此把这些信息放进模型实际收到的工具 description 和参数 schema，同时由 Runtime 做严格校验。
 
 ## 设计原则
 
@@ -73,4 +73,4 @@ Codex 的公开实现也会把 `apply_patch` 的 Add、Update、Delete 选择规
 
 ## 保留的兼容层
 
-代码中仍有两套工具表示：`VPRuntimeBackend` 构造模型实际收到的 Structured Tools，`LocalToolExecutor.tool_specs` 服务于 Runtime 校验和应用展示。两者包含少量有意差异，例如 Runtime 还接受审批 token 和旧 plan 参数别名，但这些字段不直接交给模型。本轮没有大规模重写注册架构，而是用共享的 `apply_patch` 契约和全工具一致性测试防止两套表示继续漂移。
+代码中仍有两套工具表示：`VARuntimeBackend` 构造模型实际收到的 Structured Tools，`LocalToolExecutor.tool_specs` 服务于 Runtime 校验和应用展示。两者包含少量有意差异，例如 Runtime 还接受审批 token 和旧 plan 参数别名，但这些字段不直接交给模型。本轮没有大规模重写注册架构，而是用共享的 `apply_patch` 契约和全工具一致性测试防止两套表示继续漂移。

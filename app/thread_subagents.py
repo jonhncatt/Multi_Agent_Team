@@ -107,7 +107,7 @@ class ThreadSubagentManager:
         subagent_id = str(record.get("id") or "")
         role = str(record.get("role") or "explorer")
         item = dict(record.get("item") or {})
-        message = "Subagent execution was interrupted because Vintage Programmer restarted."
+        message = "Subagent execution was interrupted because Validation Assistant restarted."
         return {
             "ok": False,
             "subagent_id": subagent_id,
