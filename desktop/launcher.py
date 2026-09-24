@@ -647,10 +647,12 @@ def windows_taskbar_relaunch_metadata(
     if is_frozen:
         launcher_path = Path(executable or sys.executable).expanduser().resolve()
         relaunch_parts = [str(launcher_path)]
-        # The packaged launcher already contains the complete multi-size icon.
-        # Keep the taskbar icon tied to that executable instead of switching to
-        # a checkout-relative ICO that Windows may fail to resolve later.
+        # The packaged launcher already contains the complete multi-size icon
+        # as RT_GROUP_ICON resource 1. Windows resource strings address an
+        # executable resource by its negative ID (",-1"), whereas ",0" is the
+        # syntax used for a direct .ico file.
         icon_path = launcher_path
+        icon_resource_id = -1
     else:
         relaunch_parts = [
             *config.python_command,
@@ -683,11 +685,12 @@ def windows_taskbar_relaunch_metadata(
             if web_icon_path.is_file()
             else build_icon_path
         )
+        icon_resource_id = 0
     return {
         "app_id": WINDOWS_APP_USER_MODEL_ID,
         "relaunch_command": subprocess.list2cmdline([str(item) for item in relaunch_parts]),
         "display_name": APP_TITLE,
-        "icon_resource": f"{icon_path},0",
+        "icon_resource": f"{icon_path},{icon_resource_id}",
     }
 
 

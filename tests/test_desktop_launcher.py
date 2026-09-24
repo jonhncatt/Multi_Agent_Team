@@ -277,7 +277,7 @@ def test_windows_taskbar_identity_relaunches_the_packaged_va_launcher(tmp_path: 
         "app_id": WINDOWS_APP_USER_MODEL_ID,
         "relaunch_command": str(launcher.resolve()),
         "display_name": APP_TITLE,
-        "icon_resource": f"{launcher.resolve()},0",
+        "icon_resource": f"{launcher.resolve()},-1",
     }
     assert WINDOWS_APP_USER_MODEL_ID == "ValidationAssistant.Desktop.V1"
 

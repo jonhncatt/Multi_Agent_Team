@@ -31,7 +31,7 @@ def verify_executable_icon(path: Path) -> None:
     extracted = int(
         shell32.ExtractIconExW(
             str(executable),
-            0,
+            -1,
             large_icons,
             small_icons,
             1,
@@ -48,4 +48,4 @@ def verify_executable_icon(path: Path) -> None:
             if handle:
                 user32.DestroyIcon(handle)
 
-    print(f"Windows Shell extracted large and small icons: {executable}")
+    print(f"Windows Shell extracted resource 1 as large and small icons: {executable}")
