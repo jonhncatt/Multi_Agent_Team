@@ -45,7 +45,7 @@ def test_display_icon_is_optically_larger_than_the_imported_master() -> None:
     assert master_fill < 0.86
     # Slightly exceed VP's 93.75% solid background fill so the bright gradient
     # has the same perceived size against light Windows surfaces.
-    assert 0.96 <= display_fill <= 0.98
+    assert 0.975 <= display_fill <= 0.995
 
     unexpanded_artwork = _centered_scale_and_crop(master, DISPLAY_ARTWORK_SCALE)
     expanded_artwork = build_display_master(master)

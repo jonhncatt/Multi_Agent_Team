@@ -21,7 +21,7 @@ DISPLAY_ARTWORK_SCALE = 1.12
 # background independently. This compensates for the softer gradient edge,
 # which otherwise looks smaller than VP even when the alpha bounding boxes are
 # numerically similar.
-BACKGROUND_ARTWORK_SCALE = 1.025
+BACKGROUND_ARTWORK_SCALE = 1.04
 
 
 def _remove_connected_background(source: Image.Image) -> Image.Image:
