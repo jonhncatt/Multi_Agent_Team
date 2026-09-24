@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageOps, ImageStat
+from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageOps
 
 
 CANVAS_SIZE = 1024
@@ -12,21 +12,6 @@ SHELL_ICON_FILENAME = "validation_assistant_shell.ico"
 ICON_PIXEL_SIZES = (16, 20, 24, 32, 40, 48, 64, 128, 256)
 ICON_SIZES = tuple((size, size) for size in ICON_PIXEL_SIZES)
 WEB_ICON_SIZES = (16, 32, 48, 64)
-SHELL_FLAT_MAX_SIZE = 64
-SHELL_BACKGROUND = (247, 91, 30)
-SHELL_MARK = (255, 253, 251)
-# The imported artwork occupies about 84% of its square canvas. Windows does
-# not add compensating scale for that transparent padding, so it looks smaller
-# than neighboring icons. This optical zoom matches the previous VP icon's
-# 93.75% background fill while retaining a safe antialiased edge.
-DISPLAY_ARTWORK_SCALE = 1.12
-# Keep the VA lettering at the established size, but extend the rounded-square
-# background independently. This compensates for the softer gradient edge,
-# which otherwise looks smaller than VP even when the alpha bounding boxes are
-# numerically similar.
-# Full-bleed at the four cardinal edges. Rounded corners remain transparent,
-# while the VA mark keeps the established independent size.
-BACKGROUND_ARTWORK_SCALE = 1.07
 
 
 def _remove_connected_background(source: Image.Image) -> Image.Image:
@@ -68,7 +53,10 @@ def _remove_connected_background(source: Image.Image) -> Image.Image:
 
 def import_master(source_path: Path, asset_dir: Path) -> Image.Image:
     imported = _remove_connected_background(Image.open(source_path))
-    imported.thumbnail((960, 960), Image.Resampling.LANCZOS)
+    # Preserve the source artwork's authored proportions. The approved VA
+    # source already contains its intended outer margin, so adding a second
+    # margin here would make the Windows icon look smaller than its peers.
+    imported.thumbnail((CANVAS_SIZE, CANVAS_SIZE), Image.Resampling.LANCZOS)
     master = Image.new("RGBA", (CANVAS_SIZE, CANVAS_SIZE), (0, 0, 0, 0))
     position = ((CANVAS_SIZE - imported.width) // 2, (CANVAS_SIZE - imported.height) // 2)
     master.alpha_composite(imported, position)
@@ -83,100 +71,14 @@ def load_master(asset_dir: Path) -> Image.Image:
     return Image.open(master_path).convert("RGBA")
 
 
-def _centered_scale_and_crop(image: Image.Image, scale: float) -> Image.Image:
-    width, height = image.size
-    scaled_size = (
-        round(width * scale),
-        round(height * scale),
-    )
-    scaled = image.resize(scaled_size, Image.Resampling.LANCZOS)
-    left = (scaled.width - width) // 2
-    top = (scaled.height - height) // 2
-    return scaled.crop((left, top, left + width, top + height))
-
-
-def _average_rgb(image: Image.Image, center: tuple[int, int], radius: int = 4) -> tuple[int, int, int]:
-    x, y = center
-    box = image.convert("RGB").crop((x - radius, y - radius, x + radius + 1, y + radius + 1))
-    return tuple(round(value) for value in ImageStat.Stat(box).mean[:3])
-
-
-def _extract_mark_mask(artwork: Image.Image) -> Image.Image:
-    """Return the light neutral VA mark without the warm background."""
-
-    red, green, blue, alpha = artwork.split()
-    minimum = ImageChops.darker(ImageChops.darker(red, green), blue)
-    maximum = ImageChops.lighter(ImageChops.lighter(red, green), blue)
-    chroma = ImageChops.subtract(maximum, minimum)
-    brightness = minimum.point(
-        lambda value: 0
-        if value < 200
-        else 255
-        if value >= 240
-        else round((value - 200) * 255 / 40)
-    )
-    neutrality = chroma.point(
-        lambda value: 255
-        if value <= 16
-        else 0
-        if value >= 64
-        else round((64 - value) * 255 / 48)
-    )
-    return ImageChops.multiply(
-        ImageChops.multiply(brightness, neutrality),
-        alpha,
-    )
-
-
-def _build_background_source(artwork: Image.Image) -> Image.Image:
-    """Reconstruct a continuous warm gradient without the VA mark."""
-
-    width, height = artwork.size
-    x1, x2 = width // 6, width * 5 // 6
-    y1, y2 = height // 6, height * 5 // 6
-    anchors = Image.new("RGB", (2, 2))
-    anchors.putdata(
-        [
-            _average_rgb(artwork, (x1, y1)),
-            _average_rgb(artwork, (x2, y1)),
-            _average_rgb(artwork, (x1, y2)),
-            _average_rgb(artwork, (x2, y2)),
-        ]
-    )
-    gradient = anchors.resize(artwork.size, Image.Resampling.BILINEAR).convert("RGBA")
-    gradient.putalpha(artwork.getchannel("A"))
-    return gradient
-
-
 def build_display_master(master: Image.Image) -> Image.Image:
-    """Scale the background independently while preserving the VA lettering."""
+    """Return the approved artwork without reconstructing its colors or shapes."""
 
-    artwork = _centered_scale_and_crop(master, DISPLAY_ARTWORK_SCALE)
-    mark_mask = _extract_mark_mask(artwork)
-    background_source = _build_background_source(artwork)
-    expanded_background = _centered_scale_and_crop(
-        background_source,
-        BACKGROUND_ARTWORK_SCALE,
-    )
-    # VP used a firm opaque border. Tighten only the new outer background edge
-    # so the bright yellow gradient does not visually disappear on light
-    # Windows surfaces.
-    expanded_alpha = expanded_background.getchannel("A").point(
-        lambda value: 0
-        if value < 8
-        else 255
-        if value >= 48
-        else round((value - 8) * 255 / 40)
-    )
-    expanded_background.putalpha(expanded_alpha)
-    mark_layer = Image.new("RGBA", artwork.size, (255, 253, 251, 0))
-    mark_layer.putalpha(mark_mask)
-    expanded_background.alpha_composite(mark_layer)
-    return expanded_background
+    return master.copy()
 
 
 def build_shell_master(display_master: Image.Image) -> Image.Image:
-    """Build the high-contrast small rendition embedded in the Windows EXE."""
+    """Firm the outer edge for Windows while preserving the approved artwork."""
 
     shape = display_master.getchannel("A").point(
         lambda value: 0
@@ -185,11 +87,8 @@ def build_shell_master(display_master: Image.Image) -> Image.Image:
         if value >= 48
         else round((value - 8) * 255 / 40)
     )
-    shell_master = Image.new("RGBA", display_master.size, (*SHELL_BACKGROUND, 0))
+    shell_master = display_master.copy()
     shell_master.putalpha(shape)
-    mark_layer = Image.new("RGBA", display_master.size, (*SHELL_MARK, 0))
-    mark_layer.putalpha(_extract_mark_mask(display_master))
-    shell_master.alpha_composite(mark_layer)
     return shell_master
 
 
@@ -219,13 +118,7 @@ def write_derived_icons(master: Image.Image, asset_dir: Path) -> None:
         append_images=icon_frames[:-1],
         sizes=ICON_SIZES,
     )
-    shell_frames = [
-        render_icon_frame(
-            shell_master if size <= SHELL_FLAT_MAX_SIZE else display_master,
-            size,
-        )
-        for size in ICON_PIXEL_SIZES
-    ]
+    shell_frames = [render_icon_frame(shell_master, size) for size in ICON_PIXEL_SIZES]
     # Keep a conservative DIB-encoded variant for the PE icon resource. Some
     # Windows Shell extensions fail while inspecting PNG-compressed frames
     # embedded in one-file executables, even though modern Windows supports

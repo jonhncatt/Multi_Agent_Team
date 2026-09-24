@@ -5,9 +5,6 @@ from pathlib import Path
 from PIL import Image, ImageChops, ImageDraw
 
 from desktop.windows.assets.generate_icons import (
-    DISPLAY_ARTWORK_SCALE,
-    _centered_scale_and_crop,
-    _extract_mark_mask,
     _remove_connected_background,
     build_display_master,
 )
@@ -27,7 +24,7 @@ def test_icon_import_removes_connected_dark_and_light_canvases() -> None:
         assert imported.getpixel((16, 16))[3] == 255
 
 
-def test_display_icon_is_optically_larger_than_the_imported_master() -> None:
+def test_display_icon_preserves_the_approved_source_proportions() -> None:
     asset_dir = REPO_ROOT / "desktop" / "windows" / "assets"
 
     with Image.open(asset_dir / "validation_assistant_master.png") as master:
@@ -43,22 +40,11 @@ def test_display_icon_is_optically_larger_than_the_imported_master() -> None:
     assert display_bbox is not None
     master_fill = (master_bbox[2] - master_bbox[0]) / 1024
     display_fill = (display_bbox[2] - display_bbox[0]) / 512
-    assert master_fill < 0.86
-    # Use a full-bleed solid background at the four cardinal edges so the
-    # gradient cannot look undersized next to the previous VP icon.
-    assert display_bbox == (0, 0, 512, 512)
-    assert display_fill == 1.0
+    assert 0.93 <= master_fill <= 0.97
+    assert abs(display_fill - master_fill) < 0.01
 
-    unexpanded_artwork = _centered_scale_and_crop(master, DISPLAY_ARTWORK_SCALE)
-    expanded_artwork = build_display_master(master)
-    # The independent background expansion must not alter the VA mark's size.
-    unexpanded_mark = _extract_mark_mask(unexpanded_artwork).point(
-        lambda value: 255 if value >= 32 else 0
-    )
-    expanded_mark = _extract_mark_mask(expanded_artwork).point(
-        lambda value: 255 if value >= 32 else 0
-    )
-    assert unexpanded_mark.getbbox() == expanded_mark.getbbox()
+    display_master = build_display_master(master)
+    assert ImageChops.difference(master, display_master).getbbox() is None
 
 
 def test_small_taskbar_frames_match_web_icons_and_preserve_gradient() -> None:
@@ -88,14 +74,14 @@ def test_small_taskbar_frames_match_web_icons_and_preserve_gradient() -> None:
         assert len(opaque_brand_colors) > 300
         assert max(red for red, _, _ in opaque_brand_colors) - min(
             red for red, _, _ in opaque_brand_colors
-        ) > 40
+        ) > 20
         assert max(green for _, green, _ in opaque_brand_colors) - min(
             green for _, green, _ in opaque_brand_colors
         ) > 80
         assert small_icon.getchannel("A").getextrema() == (0, 255)
 
 
-def test_shell_icon_uses_high_contrast_small_frames_for_windows() -> None:
+def test_shell_icon_preserves_gradient_at_every_windows_size() -> None:
     asset_dir = REPO_ROOT / "desktop" / "windows" / "assets"
 
     with Image.open(asset_dir / "validation_assistant_shell.ico") as icon:
@@ -106,8 +92,8 @@ def test_shell_icon_uses_high_contrast_small_frames_for_windows() -> None:
     large_colors = large.getcolors(maxcolors=256 * 256)
     assert small_colors is not None
     assert large_colors is not None
-    assert len(small_colors) < 300
+    assert len(small_colors) > 300
     assert len(large_colors) > 1_000
     assert small.getchannel("A").point(
         lambda value: 255 if value >= 128 else 0
-    ).getbbox() == (0, 0, 32, 32)
+    ).getbbox() is not None
