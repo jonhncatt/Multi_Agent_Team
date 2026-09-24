@@ -17,12 +17,14 @@ TASKBAR_ORANGE = (247, 91, 30)
 TASKBAR_MARK = (255, 250, 244)
 
 
-def _remove_connected_light_background(source: Image.Image) -> Image.Image:
-    """Remove only the light canvas connected to an imported image's corners."""
+def _remove_connected_background(source: Image.Image) -> Image.Image:
+    """Remove only the canvas color connected to an imported image's corners."""
 
     image = ImageOps.exif_transpose(source).convert("RGBA")
     probe = image.convert("RGB")
-    marker = (1, 2, 3)
+    # Keep the marker far from both dark and light corner colors. The previous
+    # near-black marker made Pillow treat black backgrounds as already filled.
+    marker = (0, 255, 0)
     corners = (
         (0, 0),
         (image.width - 1, 0),
@@ -53,7 +55,7 @@ def _remove_connected_light_background(source: Image.Image) -> Image.Image:
 
 
 def import_master(source_path: Path, asset_dir: Path) -> Image.Image:
-    imported = _remove_connected_light_background(Image.open(source_path))
+    imported = _remove_connected_background(Image.open(source_path))
     imported.thumbnail((960, 960), Image.Resampling.LANCZOS)
     master = Image.new("RGBA", (CANVAS_SIZE, CANVAS_SIZE), (0, 0, 0, 0))
     position = ((CANVAS_SIZE - imported.width) // 2, (CANVAS_SIZE - imported.height) // 2)
