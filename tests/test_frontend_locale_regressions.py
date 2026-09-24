@@ -414,11 +414,11 @@ def test_index_renders_static_boot_loading_fallback() -> None:
     assert 'role="status"' in index
     assert "Loading workspace..." in index
     assert 'src="/static/assets/validation_assistant.png"' in index
-    assert 'href="/static/assets/validation_assistant.ico?v=7"' in index
+    assert 'href="/static/assets/validation_assistant.ico?v=8"' in index
     for size in (16, 32, 48, 64):
         assert (
             f'sizes="{size}x{size}" '
-            f'href="/static/assets/validation_assistant_{size}.png?v=7"'
+            f'href="/static/assets/validation_assistant_{size}.png?v=8"'
         ) in index
     assert 'window.__VA_DESKTOP_CONTROL_TOKEN__' in index
     for token in (

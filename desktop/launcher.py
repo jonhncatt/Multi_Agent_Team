@@ -652,6 +652,13 @@ def windows_taskbar_relaunch_metadata(
             "--project-root",
             str(config.project_root),
         ]
+    shell_icon_path = (
+        config.project_root
+        / "desktop"
+        / "windows"
+        / "assets"
+        / "validation_assistant_shell.ico"
+    ).resolve()
     web_icon_path = (
         config.project_root / "app" / "static" / "assets" / "validation_assistant.ico"
     ).resolve()
@@ -662,7 +669,13 @@ def windows_taskbar_relaunch_metadata(
         / "assets"
         / "validation_assistant.ico"
     ).resolve()
-    icon_path = web_icon_path if web_icon_path.is_file() else build_icon_path
+    icon_path = (
+        shell_icon_path
+        if shell_icon_path.is_file()
+        else web_icon_path
+        if web_icon_path.is_file()
+        else build_icon_path
+    )
     if not icon_path.is_file() and is_frozen:
         icon_path = launcher_path
     return {

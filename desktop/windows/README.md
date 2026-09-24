@@ -38,10 +38,11 @@ window. That one-time re-pin stores the VA relaunch command and high-resolution
 icon; later launches still go through the EXE so the backend is prepared before
 Chrome App Mode opens.
 
-The executable embeds a conservative multi-size DIB icon for Windows Shell
-compatibility, while the running VA window continues to use the sharper PNG-based
-icon. The Windows build verifies that Shell can extract both large and small EXE
-icons before the launcher is published.
+The executable and Windows taskbar identity use a conservative high-contrast,
+multi-size DIB icon so the mark remains visually full at small Shell sizes. The
+Chrome title-bar favicon continues to use the gradient PNG-based icon. The
+Windows build verifies that Shell can extract both large and small EXE icons
+before the launcher is published.
 
 Use the **Exit** button in the top-right navigation to stop active work and the
 local backend before closing. Chrome's ordinary window close cannot reliably

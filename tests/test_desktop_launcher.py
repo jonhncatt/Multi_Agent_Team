@@ -247,7 +247,13 @@ def test_commands_keep_desktop_shell_outside_agent_runtime(tmp_path: Path) -> No
 
 def test_windows_taskbar_identity_relaunches_the_packaged_va_launcher(tmp_path: Path) -> None:
     root = _project_root(tmp_path)
-    icon = root / "app" / "static" / "assets" / "validation_assistant.ico"
+    icon = (
+        root
+        / "desktop"
+        / "windows"
+        / "assets"
+        / "validation_assistant_shell.ico"
+    )
     icon.parent.mkdir(parents=True)
     icon.write_bytes(b"ico")
     launcher = root / "ValidationAssistant.exe"
