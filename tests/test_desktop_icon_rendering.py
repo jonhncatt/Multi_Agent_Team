@@ -4,7 +4,12 @@ from pathlib import Path
 
 from PIL import Image, ImageChops, ImageDraw
 
-from desktop.windows.assets.generate_icons import _remove_connected_background
+from desktop.windows.assets.generate_icons import (
+    DISPLAY_ARTWORK_SCALE,
+    _centered_scale_and_crop,
+    _remove_connected_background,
+    build_display_master,
+)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -25,18 +30,31 @@ def test_display_icon_is_optically_larger_than_the_imported_master() -> None:
     asset_dir = REPO_ROOT / "desktop" / "windows" / "assets"
 
     with Image.open(asset_dir / "validation_assistant_master.png") as master:
-        master_bbox = master.convert("RGBA").getchannel("A").getbbox()
+        master = master.convert("RGBA")
+        master_bbox = master.getchannel("A").getbbox()
     with Image.open(asset_dir / "validation_assistant.png") as display_icon:
-        display_bbox = display_icon.convert("RGBA").getchannel("A").getbbox()
+        display_alpha = display_icon.convert("RGBA").getchannel("A")
+        display_bbox = display_alpha.point(
+            lambda value: 255 if value >= 128 else 0
+        ).getbbox()
 
     assert master_bbox is not None
     assert display_bbox is not None
     master_fill = (master_bbox[2] - master_bbox[0]) / 1024
     display_fill = (display_bbox[2] - display_bbox[0]) / 512
     assert master_fill < 0.86
-    # Match the previous VP icon, whose rounded background filled 93.75% of
-    # the 512 px canvas at its solid alpha edge.
-    assert 0.93 <= display_fill <= 0.96
+    # Slightly exceed VP's 93.75% solid background fill so the bright gradient
+    # has the same perceived size against light Windows surfaces.
+    assert 0.96 <= display_fill <= 0.98
+
+    unexpanded_artwork = _centered_scale_and_crop(master, DISPLAY_ARTWORK_SCALE)
+    expanded_artwork = build_display_master(master)
+    # The independent background expansion must not alter the central VA mark.
+    center = (96, 224, 928, 816)
+    assert ImageChops.difference(
+        unexpanded_artwork.crop(center),
+        expanded_artwork.crop(center),
+    ).getbbox() is None
 
 
 def test_small_taskbar_frames_match_web_icons_and_preserve_gradient() -> None:

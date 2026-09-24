@@ -17,6 +17,11 @@ WEB_ICON_SIZES = (16, 32, 48, 64)
 # than neighboring icons. This optical zoom matches the previous VP icon's
 # 93.75% background fill while retaining a safe antialiased edge.
 DISPLAY_ARTWORK_SCALE = 1.12
+# Keep the VA lettering at the established size, but extend the rounded-square
+# background independently. This compensates for the softer gradient edge,
+# which otherwise looks smaller than VP even when the alpha bounding boxes are
+# numerically similar.
+BACKGROUND_ARTWORK_SCALE = 1.025
 
 
 def _remove_connected_background(source: Image.Image) -> Image.Image:
@@ -73,18 +78,40 @@ def load_master(asset_dir: Path) -> Image.Image:
     return Image.open(master_path).convert("RGBA")
 
 
-def build_display_master(master: Image.Image) -> Image.Image:
-    """Apply the optical scale used by Windows, Chrome, and the web UI."""
-
-    width, height = master.size
+def _centered_scale_and_crop(image: Image.Image, scale: float) -> Image.Image:
+    width, height = image.size
     scaled_size = (
-        round(width * DISPLAY_ARTWORK_SCALE),
-        round(height * DISPLAY_ARTWORK_SCALE),
+        round(width * scale),
+        round(height * scale),
     )
-    scaled = master.resize(scaled_size, Image.Resampling.LANCZOS)
+    scaled = image.resize(scaled_size, Image.Resampling.LANCZOS)
     left = (scaled.width - width) // 2
     top = (scaled.height - height) // 2
     return scaled.crop((left, top, left + width, top + height))
+
+
+def build_display_master(master: Image.Image) -> Image.Image:
+    """Scale the background independently while preserving the VA lettering."""
+
+    artwork = _centered_scale_and_crop(master, DISPLAY_ARTWORK_SCALE)
+    expanded_background = _centered_scale_and_crop(
+        artwork,
+        BACKGROUND_ARTWORK_SCALE,
+    )
+    # VP used a firm opaque border. Tighten only the new outer background edge
+    # so the bright yellow gradient does not visually disappear on light
+    # Windows surfaces. The original artwork is composited back on top, keeping
+    # every VA-mark pixel and the established letter size unchanged.
+    expanded_alpha = expanded_background.getchannel("A").point(
+        lambda value: 0
+        if value < 8
+        else 255
+        if value >= 48
+        else round((value - 8) * 255 / 40)
+    )
+    expanded_background.putalpha(expanded_alpha)
+    expanded_background.alpha_composite(artwork)
+    return expanded_background
 
 
 def render_icon_frame(
